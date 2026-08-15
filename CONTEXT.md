@@ -28,6 +28,31 @@ device, board
 periodically creates and modifies rules on the controller so the show evolves.
 _Avoid_: scripting, programming the show
 
+**Scene**: A named bundle of rules and parameters — band→ring mapping,
+beat→stepper mapping, active patterns, and beat-event thresholds — that the
+controller runs as a unit. OpenClaw owns the palette of scenes and improvises by
+swapping the active scene. _Avoid_: mode, preset, effect
+
+**Musical event**: A structural change in the music — song change, drop, or
+silence — detected by the analysis process and published to NATS. OpenClaw
+reacts to musical events by choosing a new scene. _Avoid_: trigger, cue
+
+**Safety clamp**: A hard limit enforced in firmware — max brightness, max motor
+speed/duty, and thermal shutdown — that no rule or scene can exceed. _Avoid_:
+limit, cap
+
+**Mapping law**: A rule that turns music into hardware output. Fixed laws are
+hardcoded in firmware (LED group assignment, safety clamps); rewritable laws are
+parameters a scene sets (colors, brightness curve, BPM→RPM endpoints, direction,
+beat flash). _Avoid_: mapping, transform
+
+**Beat flash**: A brief, scene-defined LED flash fired on each beat, layered on
+top of the continuous level-tracking brightness. _Avoid_: strobe, pulse
+
+**NATS subject**: A named channel on the NATS bus carrying one signal — a band
+level, BPM, a beat event, or a musical event. Continuous values are plain
+numeric strings; events are JSON. _Avoid_: topic, channel
+
 **LED ring**: The ring of 8 WS2812B addressable RGB LEDs mounted on the disco
 ball.
 
