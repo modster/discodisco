@@ -33,6 +33,10 @@ beat→stepper mapping, active patterns, and beat-event thresholds — that the
 controller runs as a unit. OpenClaw owns the palette of scenes and improvises by
 swapping the active scene. _Avoid_: mode, preset, effect
 
+**Scene palette**: The set of named scenes the improvisation engine draws from.
+A seed palette ships with the system; OpenClaw can invent new scenes and reuse
+or evolve existing ones. _Avoid_: preset list, effect bank
+
 **Musical event**: A structural change in the music — song change, drop, or
 silence — detected by the analysis process and published to NATS. OpenClaw
 reacts to musical events by choosing a new scene. _Avoid_: trigger, cue

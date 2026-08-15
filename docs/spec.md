@@ -235,5 +235,9 @@ ULN2003 motor ────► 28BYJ-48 (5-wire connector)
    aubio-ledfx beat/BPM → musical-event detection → publish to NATS.
 3. **NATS schema:** register the `nats_value` sensors; verify subjects flow.
 4. **Scenes:** seed palette; OpenClaw scene-swap on `disco.event`.
+   - Implemented: `analysis/scenes.py` (Scene model + seed palette `pulse` /
+     `calm` / `rage` + `render_scene` + `SceneController`),
+     `analysis/scenerunner.py` (`SceneRunner` — subscribes to `disco.event` and
+     applies scenes via `tool_exec`). Wired into `main.py --device`.
 5. **Wiring:** assemble per §6; verify power budget and level shifter.
 6. **Improv:** OpenClaw rule-rewriting; reserved commands; safety rails.
