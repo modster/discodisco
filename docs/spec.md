@@ -78,6 +78,10 @@ strings**; events are **JSON**. Plain pub/sub, no persistence.
 events (`disco.beat`, `disco.event`) are consumed by OpenClaw, not by
 `nats_value` sensors.
 
+**Provisioning:** `python scripts/disco_provision.py <device>` registers the
+four sensors on the controller (idempotent; `--discover` lists devices; `--demo`
+adds a bass-drop demo rule).
+
 **OpenClaw control:** OpenClaw pushes scene changes via the existing WireClaw
 `tool_exec` (rule_create / ring_set / stepper_set) over NATS — no new control
 subject. It subscribes to `disco.event` to pick a new scene.
