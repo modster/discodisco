@@ -130,20 +130,25 @@ subject. It subscribes to `disco.event` to pick a new scene.
 
 ## 6. Pinout and wiring
 
-### 6.1 Controller pin assignment (ESP32-S3)
+### 6.1 Controller pin assignment (ESP32-S3 super mini)
 
-| Signal       | ESP32-S3 pin          | Notes                               |
-| ------------ | --------------------- | ----------------------------------- |
-| WS2812B data | GPIO 48 (RMT channel) | via level shifter + series resistor |
-| Stepper IN1  | GPIO 4                | ULN2003 input 1                     |
-| Stepper IN2  | GPIO 5                | ULN2003 input 2                     |
-| Stepper IN3  | GPIO 6                | ULN2003 input 3                     |
-| Stepper IN4  | GPIO 7                | ULN2003 input 4                     |
-| 5V in        | 5V / VIN              | from shared 5V supply               |
-| GND          | GND                   | common ground                       |
+> **Super-mini constraint:** the ESP32-S3 and ESP32-C3 super-mini boards expose
+> only **GPIO 0–15**. Pins are chosen within that range, avoiding strapping pins
+> (S3: 0, 3; C3: 2, 8, 9), and are configurable in
+> `firmware/wireclaw/include/disco_config.h`.
 
-> Pin numbers are a proposal; confirm against the specific ESP32-S3 dev board
-> and the WireClaw firmware's GPIO configuration before wiring.
+| Signal       | Pin      | Notes                 |
+| ------------ | -------- | --------------------- |
+| WS2812B data | GPIO4    | RMT channel           |
+| Stepper IN1  | GPIO5    | ULN2003 input 1       |
+| Stepper IN2  | GPIO6    | ULN2003 input 2       |
+| Stepper IN3  | GPIO7    | ULN2003 input 3       |
+| Stepper IN4  | GPIO10   | ULN2003 input 4       |
+| 5V in        | 5V / VIN | from shared 5V supply |
+| GND          | GND      | common ground         |
+
+> Pin numbers are configurable in `disco_config.h`; confirm against the specific
+> board and the WireClaw firmware's GPIO configuration before wiring.
 
 ### 6.2 WS2812B ring wiring
 
@@ -151,7 +156,7 @@ WS2812B is a 5V-logic device; the ESP32-S3 is 3.3V-logic. A **level shifter** is
 required on the data line.
 
 ```
-ESP32-S3 GPIO48 ──► 74AHCT125 (level shifter) ──► 330Ω ──► WS2812B DIN
+ESP32-S3 GPIO4 ──► 74AHCT125 (level shifter) ──► 330Ω ──► WS2812B DIN
                                                           │
                                                           ▼
                                                      WS2812B ring
