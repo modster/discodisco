@@ -25,8 +25,18 @@ ring reacts in real time to FFT frequency bands (low / mid / high). The light
 show should be improvised by WireClaw (ESP32 agent), not a fixed loop, so it
 differs every run.
 
-**Repo status:** empty (git init, no commits). No language, layout, or commands
-chosen yet — update this file as soon as code lands.
+**Repo status:** analysis process built (Python). See `docs/spec.md` for the
+full locked design.
+
+## Analysis process (Python)
+
+- **Language:** Python 3.13 (decided). NATS client: `nats-py`.
+- **Layout:** `analysis/` (bands, beat, events, pipeline, publisher, capture),
+  `main.py` entry point, `tests/`.
+- **Run:** `python main.py` (needs a running `nats-server` on 127.0.0.1:4222).
+- **Test:** `.venv\Scripts\python -m pytest` (venv at `.venv`).
+- **Deps:** numpy, PyAudioWPatch (WASAPI loopback), aubio-ledfx (beat/BPM),
+  nats-py. See `pyproject.toml`.
 
 ## Planned architecture
 
@@ -35,9 +45,6 @@ audio in -> FFT analysis -> band levels (low/mid/high) + BPM
         -> NATS subjects -> WireClaw (ESP32) -> WS2812B ring + stepper
 ```
 
-- Language for the FFT/analysis side is **undecided: Python or Node.js** (user
-  explicitly left this open). Pick one when the first code is written and record
-  the choice + run commands here.
 - NATS is the message bus between the analysis process and WireClaw.
 - Improvisation goal: push band/beat data to WireClaw and let its on-device
   rules/logic decide the show, rather than streaming a scripted sequence.
