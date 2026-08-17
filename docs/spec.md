@@ -138,8 +138,9 @@ subject. It subscribes to `disco.event` to pick a new scene.
 
 > **Super-mini constraint:** the ESP32-S3 and ESP32-C3 super-mini boards expose
 > only **GPIO 0–15**. Pins are chosen within that range, avoiding strapping pins
-> (S3: 0, 3; C3: 2, 8, 9), and are configurable in
-> `firmware/wireclaw/include/disco_config.h`.
+> and flash pins. On the S3 Super Mini, **IO10 is the flash chip-select
+> (FSPICS0) and cannot be used as GPIO** — so the stepper uses IO8 instead. Pins
+> are configurable in `firmware/wireclaw/include/disco_config.h`.
 
 | Signal       | Pin      | Notes                 |
 | ------------ | -------- | --------------------- |
@@ -147,7 +148,7 @@ subject. It subscribes to `disco.event` to pick a new scene.
 | Stepper IN1  | GPIO5    | ULN2003 input 1       |
 | Stepper IN2  | GPIO6    | ULN2003 input 2       |
 | Stepper IN3  | GPIO7    | ULN2003 input 3       |
-| Stepper IN4  | GPIO10   | ULN2003 input 4       |
+| Stepper IN4  | GPIO8    | ULN2003 input 4       |
 | 5V in        | 5V / VIN | from shared 5V supply |
 | GND          | GND      | common ground         |
 
@@ -184,14 +185,17 @@ ESP32-S3 GPIO4 ──► 74AHCT125 (level shifter) ──► 330Ω ──► WS2
 The 28BYJ-48 is a 5V unipolar stepper driven by the ULN2003 driver board.
 
 ```
-ESP32-S3 GPIO4 ──► ULN2003 IN1
-ESP32-S3 GPIO5 ──► ULN2003 IN2
-ESP32-S3 GPIO6 ──► ULN2003 IN3
-ESP32-S3 GPIO7 ──► ULN2003 IN4
+ESP32-S3 GPIO5 ──► ULN2003 IN1
+ESP32-S3 GPIO6 ──► ULN2003 IN2
+ESP32-S3 GPIO7 ──► ULN2003 IN3
+ESP32-S3 GPIO8 ──► ULN2003 IN4
 ULN2003 + ────────► +5V
 ULN2003 GND ──────► GND
 ULN2003 motor ────► 28BYJ-48 (5-wire connector)
 ```
+
+> **Note:** GPIO4 is the WS2812B ring data line — do not use it for the stepper.
+> Stepper pins (IN1–IN4) are GPIO5/6/7/8 per `disco_config.h`.
 
 - The ULN2003 board has its own onboard resistors and the motor connector; wire
   the four control inputs from the ESP32 and power from the shared 5V rail.

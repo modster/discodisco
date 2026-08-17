@@ -19,7 +19,7 @@
 #define DISCO_STEPPER_IN1     5
 #define DISCO_STEPPER_IN2     6
 #define DISCO_STEPPER_IN3     7
-#define DISCO_STEPPER_IN4     10
+#define DISCO_STEPPER_IN4     8
 #define DISCO_STEPPER_MAX_RPM 15   /* safety clamp: max rotation speed (RPM) */
 #define DISCO_STEPPER_SLEW    60   /* safety clamp: max RPM change per second */
 
