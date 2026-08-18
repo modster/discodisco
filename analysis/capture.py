@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import pyaudiowpatch as pyaudio
 
@@ -10,8 +11,23 @@ class Capture:
         self._pipeline = pipeline
         self._sample_rate = sample_rate
         self._frames_per_buffer = frames_per_buffer
+        self._queue = asyncio.Queue()
 
     async def run(self):
+        # PyAudio's stream.read() is blocking; run it in a dedicated thread so
+        # it never starves the asyncio event loop (which flushes NATS + handles
+        # the scene runner's subscription).
+        loop = asyncio.get_running_loop()
+        reader = threading.Thread(target=self._read_loop, args=(loop,), daemon=True)
+        reader.start()
+        try:
+            while True:
+                samples = await self._queue.get()
+                await self._pipeline.process(samples)
+        finally:
+            reader.join(timeout=1)
+
+    def _read_loop(self, loop):
         with pyaudio.PyAudio() as p:
             loopback = p.get_default_wasapi_loopback()
             stream = p.open(
@@ -26,7 +42,7 @@ class Capture:
                 while True:
                     data = stream.read(self._frames_per_buffer)
                     samples = _to_float32(data, loopback["maxInputChannels"])
-                    await self._pipeline.process(samples)
+                    loop.call_soon_threadsafe(self._queue.put_nowait, samples)
             finally:
                 stream.stop_stream()
                 stream.close()
