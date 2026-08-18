@@ -35,8 +35,29 @@ def test_render_scene_ring_set_has_color():
     s = SEED_PALETTE[0]
     calls = render_scene(s)
     ring = next(c for c in calls if c["tool"] == "ring_set")
-    assert "r" in ring and "g" in ring and "b" in ring
-    assert all(0 <= v <= 255 for v in (ring["r"], ring["g"], ring["b"]))
+    assert "leds" in ring
+    assert len(ring["leds"]) == 8
+    assert all(0 <= v <= 0xFFFFFF for v in ring["leds"])
+
+
+def test_render_scene_ring_maps_bands_to_led_groups():
+    """Fixed law: low->LEDs 0-2, mid->3-5, high->6-7, each in its band color."""
+    s = Scene(
+        name="test",
+        band_colors={"low": (255, 0, 0), "mid": (0, 255, 0), "high": (0, 0, 255)},
+        bpm_endpoints={"slow_bpm": 60, "fast_bpm": 180, "slow_rpm": 1, "fast_rpm": 8},
+        direction="cw",
+        beat_flash={"color": (255, 255, 255), "threshold": 0.5, "duration_ms": 200},
+    )
+    calls = render_scene(s)
+    ring = next(c for c in calls if c["tool"] == "ring_set")
+    leds = ring["leds"]
+    # low (red) on LEDs 0-2
+    assert leds[0] == 0xFF0000 and leds[1] == 0xFF0000 and leds[2] == 0xFF0000
+    # mid (green) on LEDs 3-5
+    assert leds[3] == 0x00FF00 and leds[4] == 0x00FF00 and leds[5] == 0x00FF00
+    # high (blue) on LEDs 6-7
+    assert leds[6] == 0x0000FF and leds[7] == 0x0000FF
 
 
 def test_render_scene_stepper_set_has_rpm_and_dir():

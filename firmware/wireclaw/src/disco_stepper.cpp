@@ -43,9 +43,11 @@ void discoStepperSetSpeed(float rpm, int8_t direction) {
 }
 
 void discoStepperPoll(void) {
-    /* Slew-limit the current RPM toward the target. */
-    float dt = (float)(millis() - s_last_step_ms) / 1000.0f;
+    unsigned long now = millis();
+    float dt = (float)(now - s_last_step_ms) / 1000.0f;
     if (dt <= 0.0f) dt = 0.001f;
+
+    /* Slew-limit the current RPM toward the target. */
     float max_delta = (float)DISCO_STEPPER_SLEW * dt;
     if (s_current_rpm < s_target_rpm) {
         s_current_rpm += max_delta;
@@ -58,27 +60,32 @@ void discoStepperPoll(void) {
     if (s_direction == 0 || s_current_rpm <= 0.0f) {
         /* Stop: de-energize coils to save power and avoid holding torque. */
         for (int i = 0; i < 4; i++) digitalWrite(s_pins[i], LOW);
-        s_last_step_ms = millis();
+        s_last_step_ms = now;
         return;
     }
 
     /* Steps per second = RPM * steps_per_rev / 60. */
     float steps_per_sec = s_current_rpm * DISCO_STEPPER_STEPS_PER_REV / 60.0f;
     if (steps_per_sec <= 0.0f) return;
-    unsigned long step_interval_ms = (unsigned long)(1000.0f / steps_per_sec);
-    if (step_interval_ms < 1) step_interval_ms = 1;
+    float step_interval_ms = 1000.0f / steps_per_sec;
 
-    unsigned long now = millis();
-    if (now - s_last_step_ms >= step_interval_ms) {
-        s_last_step_ms = now;
+    /* Advance as many phases as the elapsed time calls for, so the step rate
+     * is decoupled from how often loop() runs (WireClaw's loop does blocking
+     * network/LLM work and can be slow). */
+    int steps = (int)(dt * 1000.0f / step_interval_ms);
+    if (steps < 1) steps = 1;
+    if (steps > 64) steps = 64; /* cap so a long stall doesn't burst wildly */
+
+    for (int s = 0; s < steps; s++) {
         if (s_direction > 0) {
             s_phase = (s_phase + 1) & 7;
         } else {
             s_phase = (s_phase + 7) & 7;
         }
-        uint8_t mask = s_seq[s_phase];
-        for (int i = 0; i < 4; i++) {
-            digitalWrite(s_pins[i], (mask >> i) & 1 ? HIGH : LOW);
-        }
     }
+    uint8_t mask = s_seq[s_phase];
+    for (int i = 0; i < 4; i++) {
+        digitalWrite(s_pins[i], (mask >> i) & 1 ? HIGH : LOW);
+    }
+    s_last_step_ms = now;
 }

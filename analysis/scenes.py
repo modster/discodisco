@@ -70,19 +70,32 @@ _DIR_MAP = {"cw": 1, "ccw": -1, "oscillate": 0}
 # map a musical event type to a preferred scene mood
 _EVENT_MOOD = {"song_change": "pulse", "drop": "rage", "silence": "calm"}
 
+# Fixed law: which LEDs each band drives (8-LED ring).
+_BAND_LED_GROUPS = {"low": (0, 1, 2), "mid": (3, 4, 5), "high": (6, 7)}
+
+
+def _pack(rgb):
+    r, g, b = rgb
+    return (r << 16) | (g << 8) | b
+
 
 def render_scene(scene):
     """Turn a scene into the tool_exec calls needed to apply it.
 
     Returns a list of flat tool_request dicts, one per actuator, that OpenClaw
-    (or the SceneController) sends to the controller. The stepper uses the
-    scene's fast-endpoint RPM; the ring uses the 'low' band color as a solid
-    fill so the show is visible even before band-reactive rules exist.
+    (or the SceneController) sends to the controller. The ring is set per-LED
+    using the fixed band->LED mapping (low->0-2, mid->3-5, high->6-7), each in
+    its band color, so all three bands are visible. The stepper uses the
+    scene's fast-endpoint RPM.
     """
-    low = scene.band_colors["low"]
+    leds = [0] * 8
+    for band, indices in _BAND_LED_GROUPS.items():
+        color = _pack(scene.band_colors[band])
+        for i in indices:
+            leds[i] = color
     rpm = scene.bpm_endpoints["fast_rpm"]
     return [
-        {"tool": "ring_set", "r": low[0], "g": low[1], "b": low[2]},
+        {"tool": "ring_set", "leds": leds},
         {"tool": "stepper_set", "rpm": rpm, "dir": _DIR_MAP.get(scene.direction, 1)},
     ]
 

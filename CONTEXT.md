@@ -37,6 +37,14 @@ swapping the active scene. _Avoid_: mode, preset, effect
 A seed palette ships with the system; OpenClaw can invent new scenes and reuse
 or evolve existing ones. _Avoid_: preset list, effect bank
 
+**Reserved command**: A human-steering word that overrides the autonomous improv
+— `stop`, `off`, `calm`, `wild`. Only these words affect the show; anything else
+is ignored. _Avoid_: voice command, hotkey
+
+**Improv agent**: The OpenClaw layer that improvises the show live. On each
+musical event it asks the LLM to choose a scene, then applies it to the
+controller, so no two runs match. _Avoid_: DJ, autopilot
+
 **Musical event**: A structural change in the music — song change, drop, or
 silence — detected by the analysis process and published to NATS. OpenClaw
 reacts to musical events by choosing a new scene. _Avoid_: trigger, cue

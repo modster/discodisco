@@ -245,3 +245,7 @@ ULN2003 motor ────► 28BYJ-48 (5-wire connector)
      applies scenes via `tool_exec`). Wired into `main.py --device`.
 5. **Wiring:** assemble per §6; verify power budget and level shifter.
 6. **Improv:** OpenClaw rule-rewriting; reserved commands; safety rails.
+   - Implemented: `analysis/commands.py` (`CommandController` — reserved
+     commands `stop`/`off`/`calm`/`wild` via `disco.command`),
+     `analysis/improv.py` (`ImprovAgent` + `OpenClawPicker` — LLM scene choice
+     on `disco.event`). Wired into `main.py --device [--improv]`.

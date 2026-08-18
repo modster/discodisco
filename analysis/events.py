@@ -3,6 +3,9 @@ import numpy as np
 SILENCE_RMS = 0.01
 SILENCE_BUFFERS = 10
 CENTROID_SHIFT = 0.5
+# Minimum number of buffers between song-change events, so a single spectral
+# shift can't fire a constant stream of events (which would hammer the improv).
+SONG_CHANGE_COOLDOWN = 20
 
 
 class EventDetector:
@@ -12,6 +15,7 @@ class EventDetector:
         self._silent_buffers = 0
         self._silence = False
         self._centroid_history = []
+        self._since_change = SONG_CHANGE_COOLDOWN  # allow the first change
 
     def _centroid(self, samples):
         fft = np.abs(np.fft.rfft(samples))
@@ -31,13 +35,17 @@ class EventDetector:
 
         centroid = self._centroid(samples)
         changed = False
-        if self._centroid_history:
+        if self._centroid_history and self._since_change >= SONG_CHANGE_COOLDOWN:
             baseline = float(np.mean(self._centroid_history))
             if baseline > 0 and abs(centroid - baseline) / baseline > CENTROID_SHIFT:
                 changed = True
         self._centroid_history.append(centroid)
         if len(self._centroid_history) > 20:
             self._centroid_history.pop(0)
+        if changed:
+            self._since_change = 0
+        else:
+            self._since_change += 1
         return changed
 
     @property

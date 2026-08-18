@@ -37,3 +37,14 @@ def test_no_song_change_on_stable_input():
         d.process(_sine(200))
     changed = d.process(_sine(200))
     assert not changed
+
+
+def test_song_change_has_cooldown():
+    """A song change must not fire repeatedly within a short window."""
+    d = EventDetector(sample_rate=44100)
+    for _ in range(10):
+        d.process(_sine(200))
+    assert d.process(_sine(8000))  # first change fires
+    # immediately after, even a big shift must be suppressed by cooldown
+    assert not d.process(_sine(200))
+    assert not d.process(_sine(8000))
