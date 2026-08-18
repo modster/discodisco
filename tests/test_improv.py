@@ -64,11 +64,11 @@ def test_agent_applies_picked_scene_on_event():
 
     asyncio.run(go())
     tools = {t.get("tool") for _, t in nc.tool_calls}
-    assert "ring_set" in tools
-    assert "stepper_set" in tools
-    # the picked scene's low color is applied to the low-band LEDs (0-2)
-    ring = next(t for _, t in nc.tool_calls if t.get("tool") == "ring_set")
-    assert ring["leds"][0] == (10 << 16) | (20 << 8) | 30
+    assert "ring_chase" in tools
+    assert "stepper_set" not in tools
+    # the picked scene's low color drives the chase
+    chase = next(t for _, t in nc.tool_calls if t.get("tool") == "ring_chase")
+    assert chase["color"] == (10 << 16) | (20 << 8) | 30
 
 
 def test_agent_uses_picker_per_event():
@@ -123,4 +123,4 @@ def test_agent_survives_device_offline():
 
     asyncio.run(go())
     tools = [t.get("tool") for _, t in nc.tool_calls]
-    assert "ring_set" in tools  # the second event still applied a scene
+    assert "ring_chase" in tools  # the second event still applied a scene

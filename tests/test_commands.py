@@ -46,8 +46,8 @@ def test_calm_applies_calm_scene():
     ctrl = CommandController(client=client, device="w")
     asyncio.run(ctrl.handle("calm"))
     tools = {t for _, t, _ in client.sent}
-    assert "ring_set" in tools
-    assert "stepper_set" in tools
+    assert "ring_chase" in tools
+    assert "stepper_set" not in tools
 
 
 def test_wild_applies_wild_scene():
@@ -55,8 +55,8 @@ def test_wild_applies_wild_scene():
     ctrl = CommandController(client=client, device="w")
     asyncio.run(ctrl.handle("wild"))
     tools = {t for _, t, _ in client.sent}
-    assert "ring_set" in tools
-    assert "stepper_set" in tools
+    assert "ring_chase" in tools
+    assert "stepper_set" not in tools
 
 
 def test_unknown_command_is_noop():

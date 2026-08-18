@@ -83,20 +83,17 @@ def render_scene(scene):
     """Turn a scene into the tool_exec calls needed to apply it.
 
     Returns a list of flat tool_request dicts, one per actuator, that OpenClaw
-    (or the SceneController) sends to the controller. The ring is set per-LED
-    using the fixed band->LED mapping (low->0-2, mid->3-5, high->6-7), each in
-    its band color, so all three bands are visible. The stepper uses the
-    scene's fast-endpoint RPM.
+    (or the SceneController) sends to the controller. The ring is driven by a
+    single comet chase whose color comes from the scene's low band and whose
+    direction follows the scene. The chase is the sole ring driver.
     """
-    leds = [0] * 8
-    for band, indices in _BAND_LED_GROUPS.items():
-        color = _pack(scene.band_colors[band])
-        for i in indices:
-            leds[i] = color
     rpm = scene.bpm_endpoints["fast_rpm"]
     return [
-        {"tool": "ring_set", "leds": leds},
-        {"tool": "stepper_set", "rpm": rpm, "dir": _DIR_MAP.get(scene.direction, 1)},
+        {
+            "tool": "ring_chase",
+            "color": _pack(scene.band_colors["low"]),
+            "dir": _DIR_MAP.get(scene.direction, 1),
+        },
     ]
 
 

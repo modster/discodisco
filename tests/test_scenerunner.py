@@ -52,8 +52,8 @@ def test_runner_applies_scene_on_event():
 
     asyncio.run(go())
     tools = {t.get("tool") for _, t in nc.tool_calls}
-    assert "ring_set" in tools
-    assert "stepper_set" in tools
+    assert "ring_chase" in tools
+    assert "stepper_set" not in tools
 
 
 def test_runner_targets_device_tool_exec():

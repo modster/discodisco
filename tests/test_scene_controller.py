@@ -30,8 +30,8 @@ def test_applies_scene_as_tool_calls():
     ctrl = SceneController(client=client, device="wireclaw-01", palette=SEED_PALETTE)
     asyncio.run(ctrl.handle_event("drop"))
     tools = {t for _, t, _ in client.sent}
-    assert "ring_set" in tools
-    assert "stepper_set" in tools
+    assert "ring_chase" in tools
+    assert "stepper_set" not in tools
     # every call targets the controller device
     assert all(d == "wireclaw-01" for d, _, _ in client.sent)
 
