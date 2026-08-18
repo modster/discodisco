@@ -118,7 +118,7 @@ static const char *TOOLS_JSON = R"JSON([
   {"type":"function","function":{"name":"led_set","description":"Set RGB LED 0-255","parameters":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"}},"required":["r","g","b"]}}},
   {"type":"function","function":{"name":"ring_set","description":"Set the 8-LED WS2812B ring. Either solid fill via r/g/b, or per-LED via leds array of 8 packed 0xRRGGBB integers.","parameters":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"leds":{"type":"array","items":{"type":"integer"}}},"required":[]}}},
   {"type":"function","function":{"name":"stepper_set","description":"Set the 28BYJ-48 stepper speed and direction. rpm: 0-15, dir: 1=CW, -1=CCW, 0=stop.","parameters":{"type":"object","properties":{"rpm":{"type":"integer"},"dir":{"type":"integer"}},"required":["rpm"]}}},
-  {"type":"function","function":{"name":"ring_chase","description":"Start a comet chase around the 8-LED ring. color: 0xRRGGBB, dir: 1=CW, -1=CCW, 0=stop. Speed tracks BPM.","parameters":{"type":"object","properties":{"color":{"type":"integer"},"dir":{"type":"integer"}},"required":["color"]}}},
+  {"type":"function","function":{"name":"ring_chase","description":"Start a comet chase around the 8-LED ring. color: 0xRRGGBB, dir: 1=CW, -1=CCW, 0=stop. Speed tracks BPM via linear interpolation between the slow/fast endpoints (defaults 60/180 BPM -> 2/8 LEDs/sec).","parameters":{"type":"object","properties":{"color":{"type":"integer"},"dir":{"type":"integer"},"slow_bpm":{"type":"integer"},"fast_bpm":{"type":"integer"},"slow_speed":{"type":"integer"},"fast_speed":{"type":"integer"}},"required":["color"]}}},
 {"type":"function","function":{"name":"gpio_write","description":"Set GPIO pin HIGH/LOW","parameters":{"type":"object","properties":{"pin":{"type":"integer"},"value":{"type":"integer"}},"required":["pin","value"]}}},
 {"type":"function","function":{"name":"gpio_read","description":"Read GPIO pin state","parameters":{"type":"object","properties":{"pin":{"type":"integer"}},"required":["pin"]}}},
 {"type":"function","function":{"name":"device_info","description":"Get heap, uptime, WiFi, chip info","parameters":{"type":"object","properties":{}}}},
@@ -208,8 +208,16 @@ static void tool_ring_chase(const char *args, char *result, int result_len) {
     int dir = jsonArgInt(args, "dir", 1);
     if (dir > 1) dir = 1;
     if (dir < -1) dir = -1;
-    discoChaseSet((uint32_t)color, (int8_t)dir);
-    snprintf(result, result_len, "Chase set color=0x%06X dir=%d", color, dir);
+    int slow_bpm = jsonArgInt(args, "slow_bpm", 60);
+    int fast_bpm = jsonArgInt(args, "fast_bpm", 180);
+    int slow_speed = jsonArgInt(args, "slow_speed", 2);
+    int fast_speed = jsonArgInt(args, "fast_speed", 8);
+    discoChaseSet((uint32_t)color, (int8_t)dir,
+                  (float)slow_bpm, (float)fast_bpm,
+                  (float)slow_speed, (float)fast_speed);
+    snprintf(result, result_len,
+             "Chase set color=0x%06X dir=%d bpm=%d..%d speed=%d..%d",
+             color, dir, slow_bpm, fast_bpm, slow_speed, fast_speed);
 }
 
 static void tool_gpio_write(const char *args, char *result, int result_len) {

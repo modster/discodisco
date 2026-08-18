@@ -84,12 +84,16 @@ def render_scene(scene):
     single comet chase whose color comes from the scene's low band and whose
     direction follows the scene. The chase is the sole ring driver.
     """
-    rpm = scene.bpm_endpoints["fast_rpm"]
+    ep = scene.bpm_endpoints
     return [
         {
             "tool": "ring_chase",
             "color": _pack(scene.band_colors["low"]),
             "dir": _DIR_MAP.get(scene.direction, 1),
+            "slow_bpm": ep["slow_bpm"],
+            "fast_bpm": ep["fast_bpm"],
+            "slow_speed": ep["slow_rpm"],
+            "fast_speed": ep["fast_rpm"],
         },
     ]
 

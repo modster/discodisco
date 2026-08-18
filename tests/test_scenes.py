@@ -44,6 +44,11 @@ def test_render_scene_ring_chase_has_color_and_dir():
     assert chase["color"] == 0xFF0000
     # direction follows the scene
     assert chase["dir"] == -1
+    # BPM->speed endpoints come from the scene's bpm_endpoints
+    assert chase["slow_bpm"] == s.bpm_endpoints["slow_bpm"]
+    assert chase["fast_bpm"] == s.bpm_endpoints["fast_bpm"]
+    assert chase["slow_speed"] == s.bpm_endpoints["slow_rpm"]
+    assert chase["fast_speed"] == s.bpm_endpoints["fast_rpm"]
 
 
 def test_palette_scenes_are_distinct():

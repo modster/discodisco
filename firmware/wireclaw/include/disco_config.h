@@ -26,4 +26,8 @@
 /* 28BYJ-48: 2048 half-steps per revolution (64:1 gearbox, 4-phase half-step) */
 #define DISCO_STEPPER_STEPS_PER_REV 2048
 
+/* --- Comet chase (light-only rotation) --- */
+#define DISCO_CHASE_MAX_SPEED 8.0f   /* safety clamp: max chase speed (LEDs/sec) */
+#define DISCO_CHASE_SLEW      4.0f   /* safety clamp: max speed change per second */
+
 #endif /* DISCO_CONFIG_H */

@@ -321,8 +321,8 @@ bool deviceSetActuator(Device *dev, int value) {
             return true;
 
         case DEV_ACTUATOR_RING_CHASE:
-            /* value packs 0xRRGGBB; direction defaults CW */
-            discoChaseSet((uint32_t)value, 1);
+            /* value packs 0xRRGGBB; direction defaults CW, endpoints default */
+            discoChaseSet((uint32_t)value, 1, 60, 180, 2, 8);
             return true;
 
         default:
