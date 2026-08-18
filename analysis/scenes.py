@@ -70,9 +70,6 @@ _DIR_MAP = {"cw": 1, "ccw": -1, "oscillate": 0}
 # map a musical event type to a preferred scene mood
 _EVENT_MOOD = {"song_change": "pulse", "drop": "rage", "silence": "calm"}
 
-# Fixed law: which LEDs each band drives (8-LED ring).
-_BAND_LED_GROUPS = {"low": (0, 1, 2), "mid": (3, 4, 5), "high": (6, 7)}
-
 
 def _pack(rgb):
     r, g, b = rgb
