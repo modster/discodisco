@@ -46,7 +46,7 @@ void discoChasePoll(float bpm) {
     /* Head at s_pos, fading trail of 3 LEDs behind it. */
     const float trail_len = 3.0f;
     for (int i = 0; i < DISCO_RING_LEDS; i++) {
-        float behind = fmodf(s_pos - (float)i, (float)DISCO_RING_LEDS);
+        float behind = fmodf((s_pos - (float)i) * s_direction, (float)DISCO_RING_LEDS);
         if (behind < 0.0f) behind += (float)DISCO_RING_LEDS;
         float brightness = (behind < trail_len) ? (1.0f - behind / trail_len) : 0.0f;
         discoRingSetPixel((uint8_t)i,
