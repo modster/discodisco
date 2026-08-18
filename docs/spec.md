@@ -106,16 +106,15 @@ subscribes to `disco.event` to pick a new scene.
 
 **Fixed laws (firmware, not scene-settable):**
 
-- LED group assignment: low→LEDs 0–2, mid→3–5, high→6–7.
+- Comet color source: the chase head uses the scene's **low** band color; the
+  trail fades it toward off.
 - Safety clamps: max brightness, max chase speed, max slew (acceleration),
   thermal shutdown. Enforced at the device-type level (`ring_chase` clamps its
   input).
 
 **Scene-rewritable parameters:**
 
-- Per-band colors (low/mid/high).
-- Brightness curve per band (how brightness tracks band level, e.g. linear or
-  sqrt), clamped by firmware max.
+- Comet color (from the scene's low band).
 - BPM→chase speed endpoints (the linear map's slow/fast endpoints), clamped by
   the firmware max.
 - Direction: CW, CCW, or oscillate.
@@ -129,8 +128,6 @@ subscribes to `disco.event` to pick a new scene.
   speed (with slew limiting).
 - **Direction:** scene-settable (CW / CCW / oscillate); the comet head follows
   it and the trail fades behind it.
-- **Band levels → LED ring:** fixed LED groups; each band's brightness tracks
-  its band level via the scene's curve, clamped by firmware max.
 - **Beat events → LEDs:** a scene-defined beat flash fires on each beat, layered
   on top of the level-tracking brightness.
 
