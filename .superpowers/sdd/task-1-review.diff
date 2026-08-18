@@ -1,0 +1,433 @@
+diff --git a/firmware/wireclaw/include/devices.h b/firmware/wireclaw/include/devices.h
+index 6237ed6..01c5d9e 100644
+--- a/firmware/wireclaw/include/devices.h
++++ b/firmware/wireclaw/include/devices.h
+@@ -28,20 +28,21 @@ enum DeviceKind {
+     DEV_SENSOR_CLOCK_HHMM,     /* getLocalTime() -> hour*100+minute (e.g. 1830) */
+     DEV_SENSOR_NATS_VALUE,     /* value received from NATS subject */
+     DEV_SENSOR_SERIAL_TEXT,    /* text received from UART serial port */
+     /* Actuators */
+     DEV_ACTUATOR_DIGITAL,       /* digitalWrite */
+     DEV_ACTUATOR_RELAY,         /* digitalWrite (inverted flag) */
+     DEV_ACTUATOR_PWM,           /* analogWrite 0-255 */
+     DEV_ACTUATOR_RGB_LED,       /* rgbLedWrite packed 0xRRGGBB */
+     DEV_ACTUATOR_WS2812B_RING,  /* disco: 8-LED WS2812B ring (RMT) */
+     DEV_ACTUATOR_STEPPER,       /* disco: 28BYJ-48 stepper (4-phase) */
++    DEV_ACTUATOR_RING_CHASE,    /* disco: comet chase on the LED ring */
+ };
+ 
+ struct Device {
+     char        name[DEV_NAME_LEN];
+     DeviceKind  kind;
+     uint8_t     pin;
+     char        unit[DEV_UNIT_LEN];
+     bool        inverted;
+     bool        used;
+     /* NATS virtual sensor fields (only meaningful for DEV_SENSOR_NATS_VALUE) */
+diff --git a/firmware/wireclaw/include/disco_chase.h b/firmware/wireclaw/include/disco_chase.h
+new file mode 100644
+index 0000000..550e840
+--- /dev/null
++++ b/firmware/wireclaw/include/disco_chase.h
+@@ -0,0 +1,18 @@
++#ifndef DISCO_CHASE_H
++#define DISCO_CHASE_H
++
++#include <stdint.h>
++#include <stdbool.h>
++
++#include "disco_config.h"
++
++/* Initialize the chase state. Call once at boot. */
++void discoChaseInit(void);
++
++/* Set the comet color (0xRRGGBB) and direction (1 CW, -1 CCW, 0 stop). */
++void discoChaseSet(uint32_t color, int8_t direction);
++
++/* Advance the comet. Call from loop() each iteration. bpm drives the speed. */
++void discoChasePoll(float bpm);
++
++#endif /* DISCO_CHASE_H */
+diff --git a/firmware/wireclaw/src/devices.cpp b/firmware/wireclaw/src/devices.cpp
+index 9c6b248..c803f1f 100644
+--- a/firmware/wireclaw/src/devices.cpp
++++ b/firmware/wireclaw/src/devices.cpp
+@@ -1,20 +1,21 @@
+ /**
+  * @file devices.cpp
+  * @brief Device registry - named sensors and actuators with persistence
+  */
+ 
+ #include "devices.h"
+ #include "nats_hal.h"
+ #include "llm_client.h"
+ #include "disco_ring.h"
+ #include "disco_stepper.h"
++#include "disco_chase.h"
+ #include <LittleFS.h>
+ #if !defined(CONFIG_IDF_TARGET_ESP32)
+ #include "driver/temperature_sensor.h"
+ extern temperature_sensor_handle_t g_temp_sensor;
+ #endif
+ #include <math.h>
+ extern bool g_debug;
+ extern void led(uint8_t r, uint8_t g, uint8_t b);
+ extern bool g_led_user;
+ 
+@@ -43,20 +44,21 @@ const char *deviceKindName(DeviceKind kind) {
+         case DEV_SENSOR_CLOCK_MINUTE:  return "clock_minute";
+         case DEV_SENSOR_CLOCK_HHMM:   return "clock_hhmm";
+         case DEV_SENSOR_NATS_VALUE:    return "nats_value";
+         case DEV_SENSOR_SERIAL_TEXT:   return "serial_text";
+         case DEV_ACTUATOR_DIGITAL:     return "digital_out";
+         case DEV_ACTUATOR_RELAY:       return "relay";
+         case DEV_ACTUATOR_PWM:         return "pwm";
+     case DEV_ACTUATOR_RGB_LED:       return "rgb_led";
+     case DEV_ACTUATOR_WS2812B_RING:  return "ws2812b_ring";
+     case DEV_ACTUATOR_STEPPER:       return "stepper";
++    case DEV_ACTUATOR_RING_CHASE:    return "ring_chase";
+     default: return "unknown";
+     }
+ }
+ 
+ static DeviceKind kindFromString(const char *s) {
+     if (strcmp(s, "digital_in") == 0)    return DEV_SENSOR_DIGITAL;
+     if (strcmp(s, "analog_in") == 0)     return DEV_SENSOR_ANALOG_RAW;
+     if (strcmp(s, "ntc_10k") == 0)       return DEV_SENSOR_NTC_10K;
+     if (strcmp(s, "ldr") == 0)           return DEV_SENSOR_LDR;
+     if (strcmp(s, "internal_temp") == 0) return DEV_SENSOR_INTERNAL_TEMP;
+@@ -64,20 +66,21 @@ static DeviceKind kindFromString(const char *s) {
+     if (strcmp(s, "clock_minute") == 0)  return DEV_SENSOR_CLOCK_MINUTE;
+     if (strcmp(s, "clock_hhmm") == 0)   return DEV_SENSOR_CLOCK_HHMM;
+     if (strcmp(s, "nats_value") == 0)    return DEV_SENSOR_NATS_VALUE;
+     if (strcmp(s, "serial_text") == 0)   return DEV_SENSOR_SERIAL_TEXT;
+     if (strcmp(s, "digital_out") == 0)   return DEV_ACTUATOR_DIGITAL;
+     if (strcmp(s, "relay") == 0)         return DEV_ACTUATOR_RELAY;
+     if (strcmp(s, "pwm") == 0)           return DEV_ACTUATOR_PWM;
+     if (strcmp(s, "rgb_led") == 0)      return DEV_ACTUATOR_RGB_LED;
+     if (strcmp(s, "ws2812b_ring") == 0)  return DEV_ACTUATOR_WS2812B_RING;
+     if (strcmp(s, "stepper") == 0)       return DEV_ACTUATOR_STEPPER;
++    if (strcmp(s, "ring_chase") == 0)    return DEV_ACTUATOR_RING_CHASE;
+     return DEV_SENSOR_DIGITAL;
+ }
+ 
+ /*============================================================================
+  * CRUD
+  *============================================================================*/
+ 
+ Device *deviceGetAll() {
+     return g_devices;
+ }
+@@ -310,20 +313,25 @@ bool deviceSetActuator(Device *dev, int value) {
+                           (uint8_t)(value & 0xFF));
+             discoRingShow();
+             return true;
+ 
+         case DEV_ACTUATOR_STEPPER:
+             /* value: 0 = stop, >0 = CW at value RPM, <0 = CCW at |value| RPM */
+             discoStepperSetSpeed((float)(value < 0 ? -value : value),
+                                 value < 0 ? -1 : (value > 0 ? 1 : 0));
+             return true;
+ 
++        case DEV_ACTUATOR_RING_CHASE:
++            /* value packs 0xRRGGBB; direction defaults CW */
++            discoChaseSet((uint32_t)value, 1);
++            return true;
++
+         default:
+             return false;
+     }
+ }
+ 
+ /*============================================================================
+  * NATS Virtual Sensor Helpers
+  *============================================================================*/
+ 
+ void deviceSetNatsValue(Device *dev, float value, const char *msg) {
+@@ -589,20 +597,24 @@ void devicesReload() {
+     }
+ #endif
+     if (!deviceFind("ring")) {
+         deviceRegister("ring", DEV_ACTUATOR_WS2812B_RING, DISCO_RING_PIN, "", false);
+         changed = true;
+     }
+     if (!deviceFind("stepper")) {
+         deviceRegister("stepper", DEV_ACTUATOR_STEPPER, DISCO_STEPPER_IN1, "", false);
+         changed = true;
+     }
++    if (!deviceFind("ring_chase")) {
++        deviceRegister("ring_chase", DEV_ACTUATOR_RING_CHASE, DISCO_RING_PIN, "", false);
++        changed = true;
++    }
+     if (changed) devicesSave();
+ 
+     int count = 0;
+     for (int i = 0; i < MAX_DEVICES; i++)
+         if (g_devices[i].used) count++;
+     Serial.printf("Devices: reloaded (%d registered)\n", count);
+ }
+ 
+ /*============================================================================
+  * Serial Text UART (one device max, UART1 on fixed pins)
+@@ -767,17 +779,21 @@ void devicesInit() {
+     }
+ #endif
+     if (!deviceFind("ring")) {
+         deviceRegister("ring", DEV_ACTUATOR_WS2812B_RING, DISCO_RING_PIN, "", false);
+         changed = true;
+     }
+     if (!deviceFind("stepper")) {
+         deviceRegister("stepper", DEV_ACTUATOR_STEPPER, DISCO_STEPPER_IN1, "", false);
+         changed = true;
+     }
++    if (!deviceFind("ring_chase")) {
++        deviceRegister("ring_chase", DEV_ACTUATOR_RING_CHASE, DISCO_RING_PIN, "", false);
++        changed = true;
++    }
+     if (changed) devicesSave();
+ 
+     int count = 0;
+     for (int i = 0; i < MAX_DEVICES; i++)
+         if (g_devices[i].used) count++;
+     Serial.printf("Devices: %d registered\n", count);
+ }
+diff --git a/firmware/wireclaw/src/disco_chase.cpp b/firmware/wireclaw/src/disco_chase.cpp
+new file mode 100644
+index 0000000..e053b30
+--- /dev/null
++++ b/firmware/wireclaw/src/disco_chase.cpp
+@@ -0,0 +1,58 @@
++#include "disco_chase.h"
++
++#include <Arduino.h>
++#include <math.h>
++
++#include "disco_ring.h"
++
++static uint32_t s_color = 0xFF0000;
++static int8_t s_direction = 1;
++static float s_pos = 0.0f;
++static unsigned long s_last_ms = 0;
++
++void discoChaseInit(void) {
++    s_last_ms = millis();
++}
++
++void discoChaseSet(uint32_t color, int8_t direction) {
++    s_color = color;
++    s_direction = (direction > 0) ? 1 : (direction < 0) ? -1 : 0;
++}
++
++void discoChasePoll(float bpm) {
++    unsigned long now = millis();
++    float dt = (float)(now - s_last_ms) / 1000.0f;
++    if (dt <= 0.0f) dt = 0.001f;
++    s_last_ms = now;
++
++    if (s_direction == 0) {
++        discoRingFill(0, 0, 0);
++        discoRingShow();
++        return;
++    }
++
++    /* Speed: LEDs/sec from BPM (120 BPM -> 4 LEDs/sec, 60 BPM -> 2). */
++    float speed = (bpm > 0.0f) ? (bpm / 30.0f) : 2.0f;
++    s_pos += speed * dt * s_direction;
++
++    /* Wrap position into [0, 8). */
++    s_pos = fmodf(s_pos, (float)DISCO_RING_LEDS);
++    if (s_pos < 0.0f) s_pos += (float)DISCO_RING_LEDS;
++
++    uint8_t r = (s_color >> 16) & 0xFF;
++    uint8_t g = (s_color >> 8) & 0xFF;
++    uint8_t b = s_color & 0xFF;
++
++    /* Head at s_pos, fading trail of 3 LEDs behind it. */
++    const float trail_len = 3.0f;
++    for (int i = 0; i < DISCO_RING_LEDS; i++) {
++        float behind = fmodf(s_pos - (float)i, (float)DISCO_RING_LEDS);
++        if (behind < 0.0f) behind += (float)DISCO_RING_LEDS;
++        float brightness = (behind < trail_len) ? (1.0f - behind / trail_len) : 0.0f;
++        discoRingSetPixel((uint8_t)i,
++                          (uint8_t)(r * brightness),
++                          (uint8_t)(g * brightness),
++                          (uint8_t)(b * brightness));
++    }
++    discoRingShow();
++}
+diff --git a/firmware/wireclaw/src/main.cpp b/firmware/wireclaw/src/main.cpp
+index d603816..a735ba7 100644
+--- a/firmware/wireclaw/src/main.cpp
++++ b/firmware/wireclaw/src/main.cpp
+@@ -20,20 +20,21 @@
+ #include "tools.h"
+ #include "devices.h"
+ #include "rules.h"
+ #include "setup_portal.h"
+ #include "version.h"
+ #include "web_config.h"
+ #include "nats_hal.h"
+ #include <nats_esp32.h>
+ #include "disco_ring.h"
+ #include "disco_stepper.h"
++#include "disco_chase.h"
+ 
+ /*============================================================================
+  * Configuration
+  *============================================================================*/
+ 
+ #define LED_BRIGHTNESS   20
+ #define SERIAL_BUF_SIZE  512
+ #define MAX_HISTORY      4  /* Keep last N user+assistant turns (pairs) */
+ 
+ /* Runtime config - loaded from LittleFS, falls back to secrets.h */
+@@ -1634,20 +1635,21 @@ void setup() {
+     }
+ #endif
+ 
+     /* Initialize device registry and rule engine */
+     devicesInit();
+     rulesInit();
+ 
+     /* Initialize disco drivers (WS2812B ring + stepper) */
+     discoRingInit();
+     discoStepperInit();
++    discoChaseInit();
+ 
+     if (cfg_wifi_ssid[0] == '\0') {
+         Serial.printf("\n[!] No WiFi config — starting setup portal\n");
+         runSetupPortal(); /* blocks until config saved + reboot */
+     }
+ 
+     /* Connect WiFi */
+     if (!connectWiFi()) {
+         Serial.printf("[!] WiFi failed — starting setup portal\n");
+         runSetupPortal(); /* blocks until config saved + reboot */
+@@ -1760,20 +1762,26 @@ void loop() {
+ 
+     /* Keep sensor EMA values warm (every 10s) */
+     sensorsPoll();
+ 
+     /* Evaluate automation rules */
+     rulesEvaluate();
+ 
+     /* Advance the disco stepper toward its target speed */
+     discoStepperPoll();
+ 
++    /* Advance the comet chase, speed tracked by BPM sensor */
++    float bpm = 0.0f;
++    Device *bpm_dev = deviceFind("bpm");
++    if (bpm_dev) bpm = deviceReadSensor(bpm_dev);
++    discoChasePoll(bpm);
++
+     /* Poll serial_text UART for incoming data */
+     serialTextPoll();
+ 
+     /* Deferred reboot (allows Telegram ACK cycle to complete) */
+     if (g_reboot_pending && millis() >= g_reboot_at) {
+         Serial.printf("[Reboot] Deferred restart now\n");
+         delay(200);
+         ESP.restart();
+     }
+ 
+diff --git a/firmware/wireclaw/src/tools.cpp b/firmware/wireclaw/src/tools.cpp
+index 281dd97..62842c7 100644
+--- a/firmware/wireclaw/src/tools.cpp
++++ b/firmware/wireclaw/src/tools.cpp
+@@ -3,20 +3,21 @@
+  * @brief ESP32 tool definitions and handlers for LLM tool calling
+  */
+ 
+ #include "tools.h"
+ #include "llm_client.h"
+ #include "devices.h"
+ #include "nats_hal.h"
+ #include "rules.h"
+ #include "disco_ring.h"
+ #include "disco_stepper.h"
++#include "disco_chase.h"
+ #include <Arduino.h>
+ #include <WiFi.h>
+ #include "soc/soc_caps.h"
+ #include <LittleFS.h>
+ #include <nats_esp32.h>
+ #include <esp_task_wdt.h>
+ #if !defined(CONFIG_IDF_TARGET_ESP32)
+ #include "driver/temperature_sensor.h"
+ #endif
+ 
+@@ -110,20 +111,21 @@ static int jsonArgArrayInt(const char *json, const char *key, int index, int def
+ }
+ 
+ /*============================================================================
+  * Tool Definitions (OpenAI function calling format) - compacted
+  *============================================================================*/
+ 
+ static const char *TOOLS_JSON = R"JSON([
+   {"type":"function","function":{"name":"led_set","description":"Set RGB LED 0-255","parameters":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"}},"required":["r","g","b"]}}},
+   {"type":"function","function":{"name":"ring_set","description":"Set the 8-LED WS2812B ring. Either solid fill via r/g/b, or per-LED via leds array of 8 packed 0xRRGGBB integers.","parameters":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"leds":{"type":"array","items":{"type":"integer"}}},"required":[]}}},
+   {"type":"function","function":{"name":"stepper_set","description":"Set the 28BYJ-48 stepper speed and direction. rpm: 0-15, dir: 1=CW, -1=CCW, 0=stop.","parameters":{"type":"object","properties":{"rpm":{"type":"integer"},"dir":{"type":"integer"}},"required":["rpm"]}}},
++  {"type":"function","function":{"name":"ring_chase","description":"Start a comet chase around the 8-LED ring. color: 0xRRGGBB, dir: 1=CW, -1=CCW, 0=stop. Speed tracks BPM.","parameters":{"type":"object","properties":{"color":{"type":"integer"},"dir":{"type":"integer"}},"required":["color"]}}},
+ {"type":"function","function":{"name":"gpio_write","description":"Set GPIO pin HIGH/LOW","parameters":{"type":"object","properties":{"pin":{"type":"integer"},"value":{"type":"integer"}},"required":["pin","value"]}}},
+ {"type":"function","function":{"name":"gpio_read","description":"Read GPIO pin state","parameters":{"type":"object","properties":{"pin":{"type":"integer"}},"required":["pin"]}}},
+ {"type":"function","function":{"name":"device_info","description":"Get heap, uptime, WiFi, chip info","parameters":{"type":"object","properties":{}}}},
+ {"type":"function","function":{"name":"file_read","description":"Read file from filesystem","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}},
+ {"type":"function","function":{"name":"file_write","description":"Write file to filesystem","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}},
+ {"type":"function","function":{"name":"nats_publish","description":"Publish NATS message","parameters":{"type":"object","properties":{"subject":{"type":"string"},"payload":{"type":"string"}},"required":["subject","payload"]}}},
+ {"type":"function","function":{"name":"temperature_read","description":"Read chip temperature (C)","parameters":{"type":"object","properties":{}}}},
+ {"type":"function","function":{"name":"device_register","description":"Register sensor/actuator","parameters":{"type":"object","properties":{"name":{"type":"string"},"type":{"type":"string","enum":["digital_in","analog_in","ntc_10k","ldr","nats_value","serial_text","digital_out","relay","pwm","ws2812b_ring","stepper"],"description":"digital_in: GPIO digital read, analog_in: raw ADC reading, ntc_10k: NTC 10K thermistor (temp in C, set inverted=true if NTC is on the 3.3V side), ldr: light-dependent resistor (light level), nats_value: virtual sensor from NATS subject, serial_text: UART text input, digital_out: GPIO digital write, relay: relay on/off, pwm: PWM output, ws2812b_ring: 8-LED WS2812B ring (RMT), stepper: 28BYJ-48 stepper"},"pin":{"type":"integer"},"unit":{"type":"string"},"inverted":{"type":"boolean"},"subject":{"type":"string","description":"NATS subject (for nats_value)"},"baud":{"type":"integer","description":"Baud rate for serial_text (default 9600)"}},"required":["name","type"]}}},
+ {"type":"function","function":{"name":"device_list","description":"List registered devices","parameters":{"type":"object","properties":{}}}},
+ {"type":"function","function":{"name":"device_remove","description":"Remove device by name","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
+@@ -194,20 +196,29 @@ static void tool_stepper_set(const char *args, char *result, int result_len) {
+     int rpm = jsonArgInt(args, "rpm", 0);
+     int dir = jsonArgInt(args, "dir", 1); /* 1 CW, -1 CCW, 0 stop */
+     if (dir > 1) dir = 1;
+     if (dir < -1) dir = -1;
+     discoStepperSetSpeed((float)rpm, (int8_t)dir);
+     Device *stepper = deviceFind("stepper");
+     if (stepper) stepper->last_value = (dir < 0) ? -rpm : rpm;
+     snprintf(result, result_len, "Stepper set to %d RPM dir=%d", rpm, dir);
+ }
+ 
++static void tool_ring_chase(const char *args, char *result, int result_len) {
++    int color = jsonArgInt(args, "color", 0xFF0000);
++    int dir = jsonArgInt(args, "dir", 1);
++    if (dir > 1) dir = 1;
++    if (dir < -1) dir = -1;
++    discoChaseSet((uint32_t)color, (int8_t)dir);
++    snprintf(result, result_len, "Chase set color=0x%06X dir=%d", color, dir);
++}
++
+ static void tool_gpio_write(const char *args, char *result, int result_len) {
+     int pin = jsonArgInt(args, "pin", -1);
+     int value = jsonArgInt(args, "value", 0);
+ 
+     if (pin < 0 || pin >= SOC_GPIO_PIN_COUNT) {
+         snprintf(result, result_len, "Error: invalid pin %d (must be 0-%d)", pin, SOC_GPIO_PIN_COUNT - 1);
+         return;
+     }
+ 
+     pinMode(pin, OUTPUT);
+@@ -1196,20 +1207,22 @@ const char *toolsGetDefinitions() {
+ }
+ 
+ bool toolExecute(const char *name, const char *args_json,
+                   char *result, int result_len) {
+     if (strcmp(name, "led_set") == 0) {
+         tool_led_set(args_json, result, result_len);
+     } else if (strcmp(name, "ring_set") == 0) {
+         tool_ring_set(args_json, result, result_len);
+     } else if (strcmp(name, "stepper_set") == 0) {
+         tool_stepper_set(args_json, result, result_len);
++    } else if (strcmp(name, "ring_chase") == 0) {
++        tool_ring_chase(args_json, result, result_len);
+     } else if (strcmp(name, "gpio_write") == 0) {
+         tool_gpio_write(args_json, result, result_len);
+     } else if (strcmp(name, "gpio_read") == 0) {
+         tool_gpio_read(args_json, result, result_len);
+     } else if (strcmp(name, "device_info") == 0) {
+         tool_device_info(args_json, result, result_len);
+     } else if (strcmp(name, "file_read") == 0) {
+         tool_file_read(args_json, result, result_len);
+     } else if (strcmp(name, "file_write") == 0) {
+         tool_file_write(args_json, result, result_len);

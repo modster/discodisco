@@ -1,0 +1,26 @@
+diff --git a/firmware/wireclaw/src/disco_chase.cpp b/firmware/wireclaw/src/disco_chase.cpp
+index e053b30..3064780 100644
+--- a/firmware/wireclaw/src/disco_chase.cpp
++++ b/firmware/wireclaw/src/disco_chase.cpp
+@@ -39,20 +39,20 @@ void discoChasePoll(float bpm) {
+     s_pos = fmodf(s_pos, (float)DISCO_RING_LEDS);
+     if (s_pos < 0.0f) s_pos += (float)DISCO_RING_LEDS;
+ 
+     uint8_t r = (s_color >> 16) & 0xFF;
+     uint8_t g = (s_color >> 8) & 0xFF;
+     uint8_t b = s_color & 0xFF;
+ 
+     /* Head at s_pos, fading trail of 3 LEDs behind it. */
+     const float trail_len = 3.0f;
+     for (int i = 0; i < DISCO_RING_LEDS; i++) {
+-        float behind = fmodf(s_pos - (float)i, (float)DISCO_RING_LEDS);
++        float behind = fmodf((s_pos - (float)i) * s_direction, (float)DISCO_RING_LEDS);
+         if (behind < 0.0f) behind += (float)DISCO_RING_LEDS;
+         float brightness = (behind < trail_len) ? (1.0f - behind / trail_len) : 0.0f;
+         discoRingSetPixel((uint8_t)i,
+                           (uint8_t)(r * brightness),
+                           (uint8_t)(g * brightness),
+                           (uint8_t)(b * brightness));
+     }
+     discoRingShow();
+ }

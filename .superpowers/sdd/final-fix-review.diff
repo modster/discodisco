@@ -1,0 +1,290 @@
+diff --git a/analysis/scenes.py b/analysis/scenes.py
+index 01025ef..f999b4b 100644
+--- a/analysis/scenes.py
++++ b/analysis/scenes.py
+@@ -77,26 +77,30 @@ def _pack(rgb):
+ 
+ 
+ def render_scene(scene):
+     """Turn a scene into the tool_exec calls needed to apply it.
+ 
+     Returns a list of flat tool_request dicts, one per actuator, that OpenClaw
+     (or the SceneController) sends to the controller. The ring is driven by a
+     single comet chase whose color comes from the scene's low band and whose
+     direction follows the scene. The chase is the sole ring driver.
+     """
+-    rpm = scene.bpm_endpoints["fast_rpm"]
++    ep = scene.bpm_endpoints
+     return [
+         {
+             "tool": "ring_chase",
+             "color": _pack(scene.band_colors["low"]),
+             "dir": _DIR_MAP.get(scene.direction, 1),
++            "slow_bpm": ep["slow_bpm"],
++            "fast_bpm": ep["fast_bpm"],
++            "slow_speed": ep["slow_rpm"],
++            "fast_speed": ep["fast_rpm"],
+         },
+     ]
+ 
+ 
+ class SceneController:
+     """Swaps the active scene on musical events and applies it to the device.
+ 
+     This is the autonomous improvisation engine. It subscribes to musical
+     events (song_change / drop / silence), picks a scene from the palette, and
+     pushes the scene's tool_exec calls to the controller. If a preferred scene
+diff --git a/firmware/wireclaw/include/disco_chase.h b/firmware/wireclaw/include/disco_chase.h
+index 550e840..d6cc970 100644
+--- a/firmware/wireclaw/include/disco_chase.h
++++ b/firmware/wireclaw/include/disco_chase.h
+@@ -2,17 +2,21 @@
+ #define DISCO_CHASE_H
+ 
+ #include <stdint.h>
+ #include <stdbool.h>
+ 
+ #include "disco_config.h"
+ 
+ /* Initialize the chase state. Call once at boot. */
+ void discoChaseInit(void);
+ 
+-/* Set the comet color (0xRRGGBB) and direction (1 CW, -1 CCW, 0 stop). */
+-void discoChaseSet(uint32_t color, int8_t direction);
++/* Set the comet color (0xRRGGBB), direction (1 CW, -1 CCW, 0 stop), and the
++ * BPM->speed endpoints: at slow_bpm the chase runs slow_speed LEDs/sec, at
++ * fast_bpm it runs fast_speed LEDs/sec (linear interpolation). */
++void discoChaseSet(uint32_t color, int8_t direction,
++                   float slow_bpm, float fast_bpm,
++                   float slow_speed, float fast_speed);
+ 
+ /* Advance the comet. Call from loop() each iteration. bpm drives the speed. */
+ void discoChasePoll(float bpm);
+ 
+ #endif /* DISCO_CHASE_H */
+diff --git a/firmware/wireclaw/include/disco_config.h b/firmware/wireclaw/include/disco_config.h
+index 517eb1c..85ab868 100644
+--- a/firmware/wireclaw/include/disco_config.h
++++ b/firmware/wireclaw/include/disco_config.h
+@@ -19,11 +19,15 @@
+ #define DISCO_STEPPER_IN1     5
+ #define DISCO_STEPPER_IN2     6
+ #define DISCO_STEPPER_IN3     7
+ #define DISCO_STEPPER_IN4     8
+ #define DISCO_STEPPER_MAX_RPM 15   /* safety clamp: max rotation speed (RPM) */
+ #define DISCO_STEPPER_SLEW    60   /* safety clamp: max RPM change per second */
+ 
+ /* 28BYJ-48: 2048 half-steps per revolution (64:1 gearbox, 4-phase half-step) */
+ #define DISCO_STEPPER_STEPS_PER_REV 2048
+ 
++/* --- Comet chase (light-only rotation) --- */
++#define DISCO_CHASE_MAX_SPEED 8.0f   /* safety clamp: max chase speed (LEDs/sec) */
++#define DISCO_CHASE_SLEW      4.0f   /* safety clamp: max speed change per second */
++
+ #endif /* DISCO_CONFIG_H */
+diff --git a/firmware/wireclaw/src/devices.cpp b/firmware/wireclaw/src/devices.cpp
+index c803f1f..d308810 100644
+--- a/firmware/wireclaw/src/devices.cpp
++++ b/firmware/wireclaw/src/devices.cpp
+@@ -314,22 +314,22 @@ bool deviceSetActuator(Device *dev, int value) {
+             discoRingShow();
+             return true;
+ 
+         case DEV_ACTUATOR_STEPPER:
+             /* value: 0 = stop, >0 = CW at value RPM, <0 = CCW at |value| RPM */
+             discoStepperSetSpeed((float)(value < 0 ? -value : value),
+                                 value < 0 ? -1 : (value > 0 ? 1 : 0));
+             return true;
+ 
+         case DEV_ACTUATOR_RING_CHASE:
+-            /* value packs 0xRRGGBB; direction defaults CW */
+-            discoChaseSet((uint32_t)value, 1);
++            /* value packs 0xRRGGBB; direction defaults CW, endpoints default */
++            discoChaseSet((uint32_t)value, 1, 60, 180, 2, 8);
+             return true;
+ 
+         default:
+             return false;
+     }
+ }
+ 
+ /*============================================================================
+  * NATS Virtual Sensor Helpers
+  *============================================================================*/
+diff --git a/firmware/wireclaw/src/disco_chase.cpp b/firmware/wireclaw/src/disco_chase.cpp
+index 3064780..b15e6c3 100644
+--- a/firmware/wireclaw/src/disco_chase.cpp
++++ b/firmware/wireclaw/src/disco_chase.cpp
+@@ -3,44 +3,83 @@
+ #include <Arduino.h>
+ #include <math.h>
+ 
+ #include "disco_ring.h"
+ 
+ static uint32_t s_color = 0xFF0000;
+ static int8_t s_direction = 1;
+ static float s_pos = 0.0f;
+ static unsigned long s_last_ms = 0;
+ 
++/* BPM->speed endpoints (linear interpolation). */
++static float s_slow_bpm = 60.0f;
++static float s_fast_bpm = 180.0f;
++static float s_slow_speed = 2.0f;
++static float s_fast_speed = 8.0f;
++
++/* Slew-limited current speed (LEDs/sec). */
++static float s_current_speed = 2.0f;
++
+ void discoChaseInit(void) {
+     s_last_ms = millis();
+ }
+ 
+-void discoChaseSet(uint32_t color, int8_t direction) {
++void discoChaseSet(uint32_t color, int8_t direction,
++                   float slow_bpm, float fast_bpm,
++                   float slow_speed, float fast_speed) {
+     s_color = color;
+     s_direction = (direction > 0) ? 1 : (direction < 0) ? -1 : 0;
++
++    /* Clamp the endpoint speeds to the firmware safety max. */
++    if (slow_speed < 0.0f) slow_speed = 0.0f;
++    if (slow_speed > DISCO_CHASE_MAX_SPEED) slow_speed = DISCO_CHASE_MAX_SPEED;
++    if (fast_speed < 0.0f) fast_speed = 0.0f;
++    if (fast_speed > DISCO_CHASE_MAX_SPEED) fast_speed = DISCO_CHASE_MAX_SPEED;
++
++    s_slow_bpm = slow_bpm;
++    s_fast_bpm = fast_bpm;
++    s_slow_speed = slow_speed;
++    s_fast_speed = fast_speed;
+ }
+ 
+ void discoChasePoll(float bpm) {
+     unsigned long now = millis();
+     float dt = (float)(now - s_last_ms) / 1000.0f;
+     if (dt <= 0.0f) dt = 0.001f;
+     s_last_ms = now;
+ 
+     if (s_direction == 0) {
+         discoRingFill(0, 0, 0);
+         discoRingShow();
+         return;
+     }
+ 
+-    /* Speed: LEDs/sec from BPM (120 BPM -> 4 LEDs/sec, 60 BPM -> 2). */
+-    float speed = (bpm > 0.0f) ? (bpm / 30.0f) : 2.0f;
+-    s_pos += speed * dt * s_direction;
++    /* Speed: linear interpolation of BPM between the scene-settable endpoints,
++     * clamped to [0, DISCO_CHASE_MAX_SPEED], then slew-limited. */
++    float target = s_slow_speed;
++    if (s_fast_bpm > s_slow_bpm) {
++        float t = (bpm - s_slow_bpm) / (s_fast_bpm - s_slow_bpm);
++        if (t < 0.0f) t = 0.0f;
++        if (t > 1.0f) t = 1.0f;
++        target = s_slow_speed + (s_fast_speed - s_slow_speed) * t;
++    }
++    if (target < 0.0f) target = 0.0f;
++    if (target > DISCO_CHASE_MAX_SPEED) target = DISCO_CHASE_MAX_SPEED;
++
++    /* Slew-limit the current speed toward the target. */
++    float max_delta = DISCO_CHASE_SLEW * dt;
++    float diff = target - s_current_speed;
++    if (diff > max_delta) diff = max_delta;
++    if (diff < -max_delta) diff = -max_delta;
++    s_current_speed += diff;
++
++    s_pos += s_current_speed * dt * s_direction;
+ 
+     /* Wrap position into [0, 8). */
+     s_pos = fmodf(s_pos, (float)DISCO_RING_LEDS);
+     if (s_pos < 0.0f) s_pos += (float)DISCO_RING_LEDS;
+ 
+     uint8_t r = (s_color >> 16) & 0xFF;
+     uint8_t g = (s_color >> 8) & 0xFF;
+     uint8_t b = s_color & 0xFF;
+ 
+     /* Head at s_pos, fading trail of 3 LEDs behind it. */
+diff --git a/firmware/wireclaw/src/tools.cpp b/firmware/wireclaw/src/tools.cpp
+index 62842c7..6dfdba8 100644
+--- a/firmware/wireclaw/src/tools.cpp
++++ b/firmware/wireclaw/src/tools.cpp
+@@ -111,21 +111,21 @@ static int jsonArgArrayInt(const char *json, const char *key, int index, int def
+ }
+ 
+ /*============================================================================
+  * Tool Definitions (OpenAI function calling format) - compacted
+  *============================================================================*/
+ 
+ static const char *TOOLS_JSON = R"JSON([
+   {"type":"function","function":{"name":"led_set","description":"Set RGB LED 0-255","parameters":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"}},"required":["r","g","b"]}}},
+   {"type":"function","function":{"name":"ring_set","description":"Set the 8-LED WS2812B ring. Either solid fill via r/g/b, or per-LED via leds array of 8 packed 0xRRGGBB integers.","parameters":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"leds":{"type":"array","items":{"type":"integer"}}},"required":[]}}},
+   {"type":"function","function":{"name":"stepper_set","description":"Set the 28BYJ-48 stepper speed and direction. rpm: 0-15, dir: 1=CW, -1=CCW, 0=stop.","parameters":{"type":"object","properties":{"rpm":{"type":"integer"},"dir":{"type":"integer"}},"required":["rpm"]}}},
+-  {"type":"function","function":{"name":"ring_chase","description":"Start a comet chase around the 8-LED ring. color: 0xRRGGBB, dir: 1=CW, -1=CCW, 0=stop. Speed tracks BPM.","parameters":{"type":"object","properties":{"color":{"type":"integer"},"dir":{"type":"integer"}},"required":["color"]}}},
++  {"type":"function","function":{"name":"ring_chase","description":"Start a comet chase around the 8-LED ring. color: 0xRRGGBB, dir: 1=CW, -1=CCW, 0=stop. Speed tracks BPM via linear interpolation between the slow/fast endpoints (defaults 60/180 BPM -> 2/8 LEDs/sec).","parameters":{"type":"object","properties":{"color":{"type":"integer"},"dir":{"type":"integer"},"slow_bpm":{"type":"integer"},"fast_bpm":{"type":"integer"},"slow_speed":{"type":"integer"},"fast_speed":{"type":"integer"}},"required":["color"]}}},
+ {"type":"function","function":{"name":"gpio_write","description":"Set GPIO pin HIGH/LOW","parameters":{"type":"object","properties":{"pin":{"type":"integer"},"value":{"type":"integer"}},"required":["pin","value"]}}},
+ {"type":"function","function":{"name":"gpio_read","description":"Read GPIO pin state","parameters":{"type":"object","properties":{"pin":{"type":"integer"}},"required":["pin"]}}},
+ {"type":"function","function":{"name":"device_info","description":"Get heap, uptime, WiFi, chip info","parameters":{"type":"object","properties":{}}}},
+ {"type":"function","function":{"name":"file_read","description":"Read file from filesystem","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}},
+ {"type":"function","function":{"name":"file_write","description":"Write file to filesystem","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}},
+ {"type":"function","function":{"name":"nats_publish","description":"Publish NATS message","parameters":{"type":"object","properties":{"subject":{"type":"string"},"payload":{"type":"string"}},"required":["subject","payload"]}}},
+ {"type":"function","function":{"name":"temperature_read","description":"Read chip temperature (C)","parameters":{"type":"object","properties":{}}}},
+ {"type":"function","function":{"name":"device_register","description":"Register sensor/actuator","parameters":{"type":"object","properties":{"name":{"type":"string"},"type":{"type":"string","enum":["digital_in","analog_in","ntc_10k","ldr","nats_value","serial_text","digital_out","relay","pwm","ws2812b_ring","stepper"],"description":"digital_in: GPIO digital read, analog_in: raw ADC reading, ntc_10k: NTC 10K thermistor (temp in C, set inverted=true if NTC is on the 3.3V side), ldr: light-dependent resistor (light level), nats_value: virtual sensor from NATS subject, serial_text: UART text input, digital_out: GPIO digital write, relay: relay on/off, pwm: PWM output, ws2812b_ring: 8-LED WS2812B ring (RMT), stepper: 28BYJ-48 stepper"},"pin":{"type":"integer"},"unit":{"type":"string"},"inverted":{"type":"boolean"},"subject":{"type":"string","description":"NATS subject (for nats_value)"},"baud":{"type":"integer","description":"Baud rate for serial_text (default 9600)"}},"required":["name","type"]}}},
+ {"type":"function","function":{"name":"device_list","description":"List registered devices","parameters":{"type":"object","properties":{}}}},
+ {"type":"function","function":{"name":"device_remove","description":"Remove device by name","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
+@@ -201,22 +201,30 @@ static void tool_stepper_set(const char *args, char *result, int result_len) {
+     Device *stepper = deviceFind("stepper");
+     if (stepper) stepper->last_value = (dir < 0) ? -rpm : rpm;
+     snprintf(result, result_len, "Stepper set to %d RPM dir=%d", rpm, dir);
+ }
+ 
+ static void tool_ring_chase(const char *args, char *result, int result_len) {
+     int color = jsonArgInt(args, "color", 0xFF0000);
+     int dir = jsonArgInt(args, "dir", 1);
+     if (dir > 1) dir = 1;
+     if (dir < -1) dir = -1;
+-    discoChaseSet((uint32_t)color, (int8_t)dir);
+-    snprintf(result, result_len, "Chase set color=0x%06X dir=%d", color, dir);
++    int slow_bpm = jsonArgInt(args, "slow_bpm", 60);
++    int fast_bpm = jsonArgInt(args, "fast_bpm", 180);
++    int slow_speed = jsonArgInt(args, "slow_speed", 2);
++    int fast_speed = jsonArgInt(args, "fast_speed", 8);
++    discoChaseSet((uint32_t)color, (int8_t)dir,
++                  (float)slow_bpm, (float)fast_bpm,
++                  (float)slow_speed, (float)fast_speed);
++    snprintf(result, result_len,
++             "Chase set color=0x%06X dir=%d bpm=%d..%d speed=%d..%d",
++             color, dir, slow_bpm, fast_bpm, slow_speed, fast_speed);
+ }
+ 
+ static void tool_gpio_write(const char *args, char *result, int result_len) {
+     int pin = jsonArgInt(args, "pin", -1);
+     int value = jsonArgInt(args, "value", 0);
+ 
+     if (pin < 0 || pin >= SOC_GPIO_PIN_COUNT) {
+         snprintf(result, result_len, "Error: invalid pin %d (must be 0-%d)", pin, SOC_GPIO_PIN_COUNT - 1);
+         return;
+     }
+diff --git a/tests/test_scenes.py b/tests/test_scenes.py
+index 34d1f38..cf0f5a3 100644
+--- a/tests/test_scenes.py
++++ b/tests/test_scenes.py
+@@ -37,15 +37,20 @@ def test_render_scene_ring_chase_has_color_and_dir():
+         bpm_endpoints={"slow_bpm": 60, "fast_bpm": 180, "slow_rpm": 1, "fast_rpm": 8},
+         direction="ccw",
+         beat_flash={"color": (255, 255, 255), "threshold": 0.5, "duration_ms": 200},
+     )
+     calls = render_scene(s)
+     chase = next(c for c in calls if c["tool"] == "ring_chase")
+     # color comes from the low band
+     assert chase["color"] == 0xFF0000
+     # direction follows the scene
+     assert chase["dir"] == -1
++    # BPM->speed endpoints come from the scene's bpm_endpoints
++    assert chase["slow_bpm"] == s.bpm_endpoints["slow_bpm"]
++    assert chase["fast_bpm"] == s.bpm_endpoints["fast_bpm"]
++    assert chase["slow_speed"] == s.bpm_endpoints["slow_rpm"]
++    assert chase["fast_speed"] == s.bpm_endpoints["fast_rpm"]
+ 
+ 
+ def test_palette_scenes_are_distinct():
+     names = {s.name for s in SEED_PALETTE}
+     assert len(names) == len(SEED_PALETTE)

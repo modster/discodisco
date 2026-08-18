@@ -1,0 +1,254 @@
+diff --git a/CONTEXT.md b/CONTEXT.md
+index cdb5ec9..f30622a 100644
+--- a/CONTEXT.md
++++ b/CONTEXT.md
+@@ -1,72 +1,74 @@
+ # Disco Ball Controller
+ 
+-A disco ball device: an ESP32 drives an 8-LED WS2812B ring and a 28BYJ-48
+-stepper (the ball's rotation), reacting in real time to music captured on a PC,
+-with the performance improvised so no two runs match.
++A disco ball device: an ESP32 drives an 8-LED WS2812B ring with a light-only
++comet chase (rotation), reacting in real time to music captured on a PC, with
++the performance improvised so no two runs match.
+ 
+ ## Language
+ 
+ **Show**: The real-time light-and-motion performance the device produces while
+ music plays. Improvised, never identical between runs. _Avoid_: animation,
+ sequence, loop
+ 
+ **Band levels**: Real-time magnitudes of three FFT frequency ranges — low, mid,
+ high — computed from the captured audio stream. _Avoid_: channels, EQ bands
+ 
+ **Beat**: A detected musical pulse event; its tracked rate (BPM) drives the
+-stepper's rotation speed. _Avoid_: onset, kick
++comet chase's speed. _Avoid_: onset, kick
+ 
+ **Analysis process**: The Python program on the PC that captures system loopback
+ audio, computes band levels and BPM, and publishes them to NATS. _Avoid_:
+ server, backend
+ 
+-**Controller**: The ESP32 running WireClaw firmware. Owns the LED ring and
+-stepper; reacts to NATS-fed values through its on-device rule engine. _Avoid_:
+-device, board
++**Controller**: The ESP32 running WireClaw firmware. Owns the LED ring and its
++comet chase; reacts to NATS-fed values through its on-device rule engine.
++_Avoid_: device, board
+ 
+ **Rule-rewriting**: OpenClaw's live improvisation mechanism: during a show it
+ periodically creates and modifies rules on the controller so the show evolves.
+ _Avoid_: scripting, programming the show
+ 
+ **Scene**: A named bundle of rules and parameters — band→ring mapping,
+-beat→stepper mapping, active patterns, and beat-event thresholds — that the
++chase→speed mapping, active patterns, and beat-event thresholds — that the
+ controller runs as a unit. OpenClaw owns the palette of scenes and improvises by
+ swapping the active scene. _Avoid_: mode, preset, effect
+ 
+ **Scene palette**: The set of named scenes the improvisation engine draws from.
+ A seed palette ships with the system; OpenClaw can invent new scenes and reuse
+ or evolve existing ones. _Avoid_: preset list, effect bank
+ 
+ **Reserved command**: A human-steering word that overrides the autonomous improv
+ — `stop`, `off`, `calm`, `wild`. Only these words affect the show; anything else
+ is ignored. _Avoid_: voice command, hotkey
+ 
+ **Improv agent**: The OpenClaw layer that improvises the show live. On each
+ musical event it asks the LLM to choose a scene, then applies it to the
+ controller, so no two runs match. _Avoid_: DJ, autopilot
+ 
+ **Musical event**: A structural change in the music — song change, drop, or
+ silence — detected by the analysis process and published to NATS. OpenClaw
+ reacts to musical events by choosing a new scene. _Avoid_: trigger, cue
+ 
+-**Safety clamp**: A hard limit enforced in firmware — max brightness, max motor
+-speed/duty, and thermal shutdown — that no rule or scene can exceed. _Avoid_:
+-limit, cap
++**Safety clamp**: A hard limit enforced in firmware — max brightness, max chase
++speed, and thermal shutdown — that no rule or scene can exceed. _Avoid_: limit,
++cap
+ 
+ **Mapping law**: A rule that turns music into hardware output. Fixed laws are
+ hardcoded in firmware (LED group assignment, safety clamps); rewritable laws are
+-parameters a scene sets (colors, brightness curve, BPM→RPM endpoints, direction,
+-beat flash). _Avoid_: mapping, transform
++parameters a scene sets (colors, brightness curve, BPM→chase speed endpoints,
++direction, beat flash). _Avoid_: mapping, transform
+ 
+ **Beat flash**: A brief, scene-defined LED flash fired on each beat, layered on
+ top of the continuous level-tracking brightness. _Avoid_: strobe, pulse
+ 
+ **NATS subject**: A named channel on the NATS bus carrying one signal — a band
+ level, BPM, a beat event, or a musical event. Continuous values are plain
+ numeric strings; events are JSON. _Avoid_: topic, channel
+ 
+ **LED ring**: The ring of 8 WS2812B addressable RGB LEDs mounted on the disco
+-ball.
++ball. The ball itself is static; all rotation is the comet chase.
+ 
+-**Stepper**: The 28BYJ-48 stepper motor (driven via a ULN2003 board) that
+-rotates the disco ball.
++**Comet chase**: The light-only rotation effect — a bright head LED with a
++fading trail that chases around the LED ring, driven by BPM. Replaces the
++stepper for rotation. The head's color comes from the scene's low band and its
++direction follows the scene. _Avoid_: spinner, rotator
+diff --git a/docs/spec.md b/docs/spec.md
+index fc73d74..a53b6e9 100644
+--- a/docs/spec.md
++++ b/docs/spec.md
+@@ -1,18 +1,19 @@
+ # Disco Ball Controller — Locked Spec
+ 
+ The destination of the wayfinder map (issue #1). This spec is the agreed design
+ for a disco ball controller: a Python **analysis process** on a PC captures
+ system loopback audio, computes **band levels** and **BPM**, and publishes them
+ to NATS; an ESP32 **controller** running extended WireClaw firmware drives an
+-8-LED WS2812B **LED ring** and a 28BYJ-48 **stepper**; OpenClaw improvises the
+-**show** by live **rule-rewriting**, so no two runs match.
++8-LED WS2812B **LED ring** with a light-only **comet chase** (a bright head LED
++with a fading trail); OpenClaw improvises the **show** by live
++**rule-rewriting**, so no two runs match.
+ 
+ Decisions are recorded on the map's tickets (#2–#8) and in `docs/research/`.
+ This document is the assembled whole.
+ 
+ ---
+ 
+ ## 1. Architecture
+ 
+ ```
+ system audio (WASAPI loopback)
+@@ -24,27 +25,27 @@ system audio (WASAPI loopback)
+ │  NumPy FFT → band levels     │
+ │  aubio-ledfx → beat + BPM    │
+ │  musical-event detection     │
+ └──────────────┬──────────────┘
+                │  NATS (local nats-server)
+                ▼
+ ┌─────────────────────────────┐
+ │  Controller (ESP32-S3)      │  WireClaw firmware (extended)
+ │  nats_value sensors          │
+ │  rule engine (offline)       │
+-│  ws2812b_ring (RMT)          │
+-│  stepper (4-phase GPIO)      │
+-└──────┬──────────────┬────────┘
+-       │              │
+-       ▼              ▼
+-   LED ring        Stepper
+-   (8× WS2812B)    (28BYJ-48 + ULN2003)
++│  ring_chase (RMT comet)      │
++└────────────┬─────────────────┘
++             │
++             ▼
++        LED ring
++        (8× WS2812B)
++        comet chase around the ring
+ ```
+ 
+ - **Analysis process** runs on the PC, publishes to NATS.
+ - **Controller** runs the show in realtime from NATS-fed values; the rule loop
+   runs 24/7 with no LLM and no network.
+ - **OpenClaw** (on the PC) subscribes to musical events and improvises by
+   swapping scenes via WireClaw `tool_exec`.
+ 
+ ## 2. Component choices
+ 
+@@ -76,64 +77,65 @@ strings**; events are **JSON**. Plain pub/sub, no persistence.
+ `band_low` ← `disco.band.low`, `band_mid` ← `disco.band.mid`, `band_high` ←
+ `disco.band.high`, `bpm` ← `disco.bpm`. Rules read these directly. The JSON
+ events (`disco.beat`, `disco.event`) are consumed by OpenClaw, not by
+ `nats_value` sensors.
+ 
+ **Provisioning:** `python scripts/disco_provision.py <device>` registers the
+ four sensors on the controller (idempotent; `--discover` lists devices; `--demo`
+ adds a bass-drop demo rule).
+ 
+ **OpenClaw control:** OpenClaw pushes scene changes via the existing WireClaw
+-`tool_exec` (rule_create / ring_set / stepper_set) over NATS — no new control
+-subject. It subscribes to `disco.event` to pick a new scene.
++`tool_exec` (rule_create / ring_chase) over NATS — no new control subject. It
++subscribes to `disco.event` to pick a new scene.
+ 
+ ## 4. Improv design
+ 
+ - **Scene** = a named bundle of rules + parameters: band→ring mapping,
+-  beat→stepper mapping, active patterns, beat-event thresholds.
++  chase→speed mapping, active patterns, beat-event thresholds.
+ - OpenClaw owns a **palette of scenes** (seed palette + invents new ones) and
+   swaps the **active scene on musical events** (song change, drop, silence).
+ - The controller runs the scene's rules in realtime between interventions.
+ - **Randomness is LLM-only** — OpenClaw picks/invents scenes; the controller
+   executes deterministically.
+ - **Fully autonomous** during a show, with reserved commands ('stop', 'off',
+   'calm', 'wild') via OpenClaw chat for human steering.
+ - **Transitions are abrupt** — scene change replaces the rule set immediately.
+ - **Failure mode:** if OpenClaw is down/slow at a musical event, the controller
+   keeps running the current scene; the next event retries.
+ 
+ ## 5. Mapping laws
+ 
+ **Fixed laws (firmware, not scene-settable):**
+ 
+ - LED group assignment: low→LEDs 0–2, mid→3–5, high→6–7.
+-- Safety clamps: max brightness, max RPM, max slew (acceleration), thermal
+-  shutdown. Enforced at the device-type level (`ring_set` / `stepper_set` clamp
+-  their inputs).
++- Safety clamps: max brightness, max chase speed, max slew (acceleration),
++  thermal shutdown. Enforced at the device-type level (`ring_chase` clamps its
++  input).
+ 
+ **Scene-rewritable parameters:**
+ 
+ - Per-band colors (low/mid/high).
+ - Brightness curve per band (how brightness tracks band level, e.g. linear or
+   sqrt), clamped by firmware max.
+-- BPM→RPM endpoints (the linear map's slow/fast endpoints), within the RPM
+-  clamp.
++- BPM→chase speed endpoints (the linear map's slow/fast endpoints), clamped by
++  the firmware max.
+ - Direction: CW, CCW, or oscillate.
+ - Beat-flash params + threshold (color, which LEDs, duration, threshold).
+ 
+ **The laws:**
+ 
+-- **BPM → stepper:** linear map from BPM to RPM, endpoints scene-settable,
+-  clamped by firmware max RPM and max slew. The stepper rotates continuously at
+-  the current BPM-derived speed; BPM updates smoothly change speed (with slew
+-  limiting).
+-- **Direction:** scene-settable (CW / CCW / oscillate).
++- **BPM → chase speed:** linear map from BPM to chase speed (LEDs per second),
++  endpoints scene-settable, clamped by firmware max. The comet head chases
++  around the ring at the current BPM-derived speed; BPM updates smoothly change
++  speed (with slew limiting).
++- **Direction:** scene-settable (CW / CCW / oscillate); the comet head follows
++  it and the trail fades behind it.
+ - **Band levels → LED ring:** fixed LED groups; each band's brightness tracks
+   its band level via the scene's curve, clamped by firmware max.
+ - **Beat events → LEDs:** a scene-defined beat flash fires on each beat, layered
+   on top of the level-tracking brightness.
+ 
+ ## 6. Pinout and wiring
+ 
+ ### 6.1 Controller pin assignment (ESP32-S3 super mini)
+ 
+ > **Super-mini constraint:** the ESP32-S3 and ESP32-C3 super-mini boards expose
+@@ -238,14 +240,18 @@ ULN2003 motor ────► 28BYJ-48 (5-wire connector)
+ 2. **Analysis process:** PyAudioWPatch capture → NumPy FFT band levels →
+    aubio-ledfx beat/BPM → musical-event detection → publish to NATS.
+ 3. **NATS schema:** register the `nats_value` sensors; verify subjects flow.
+ 4. **Scenes:** seed palette; OpenClaw scene-swap on `disco.event`.
+    - Implemented: `analysis/scenes.py` (Scene model + seed palette `pulse` /
+      `calm` / `rage` + `render_scene` + `SceneController`),
+      `analysis/scenerunner.py` (`SceneRunner` — subscribes to `disco.event` and
+      applies scenes via `tool_exec`). Wired into `main.py --device`.
+ 5. **Wiring:** assemble per §6; verify power budget and level shifter.
+ 6. **Improv:** OpenClaw rule-rewriting; reserved commands; safety rails.
++   - **Light-rotation change:** rotation is now the light-only **comet chase** —
++     `render_scene` drives a single `ring_chase` (color from the scene's low
++     band, direction from the scene) instead of a stepper, so the ball stays
++     static.
+    - Implemented: `analysis/commands.py` (`CommandController` — reserved
+      commands `stop`/`off`/`calm`/`wild` via `disco.command`),
+      `analysis/improv.py` (`ImprovAgent` + `OpenClawPicker` — LLM scene choice
+      on `disco.event`). Wired into `main.py --device [--improv]`.

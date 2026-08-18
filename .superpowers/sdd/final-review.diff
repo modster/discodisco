@@ -1,0 +1,970 @@
+diff --git a/CONTEXT.md b/CONTEXT.md
+index cdb5ec9..f30622a 100644
+--- a/CONTEXT.md
++++ b/CONTEXT.md
+@@ -1,72 +1,74 @@
+ # Disco Ball Controller
+ 
+-A disco ball device: an ESP32 drives an 8-LED WS2812B ring and a 28BYJ-48
+-stepper (the ball's rotation), reacting in real time to music captured on a PC,
+-with the performance improvised so no two runs match.
++A disco ball device: an ESP32 drives an 8-LED WS2812B ring with a light-only
++comet chase (rotation), reacting in real time to music captured on a PC, with
++the performance improvised so no two runs match.
+ 
+ ## Language
+ 
+ **Show**: The real-time light-and-motion performance the device produces while
+ music plays. Improvised, never identical between runs. _Avoid_: animation,
+ sequence, loop
+ 
+ **Band levels**: Real-time magnitudes of three FFT frequency ranges — low, mid,
+ high — computed from the captured audio stream. _Avoid_: channels, EQ bands
+ 
+ **Beat**: A detected musical pulse event; its tracked rate (BPM) drives the
+-stepper's rotation speed. _Avoid_: onset, kick
++comet chase's speed. _Avoid_: onset, kick
+ 
+ **Analysis process**: The Python program on the PC that captures system loopback
+ audio, computes band levels and BPM, and publishes them to NATS. _Avoid_:
+ server, backend
+ 
+-**Controller**: The ESP32 running WireClaw firmware. Owns the LED ring and
+-stepper; reacts to NATS-fed values through its on-device rule engine. _Avoid_:
+-device, board
++**Controller**: The ESP32 running WireClaw firmware. Owns the LED ring and its
++comet chase; reacts to NATS-fed values through its on-device rule engine.
++_Avoid_: device, board
+ 
+ **Rule-rewriting**: OpenClaw's live improvisation mechanism: during a show it
+ periodically creates and modifies rules on the controller so the show evolves.
+ _Avoid_: scripting, programming the show
+ 
+ **Scene**: A named bundle of rules and parameters — band→ring mapping,
+-beat→stepper mapping, active patterns, and beat-event thresholds — that the
++chase→speed mapping, active patterns, and beat-event thresholds — that the
+ controller runs as a unit. OpenClaw owns the palette of scenes and improvises by
+ swapping the active scene. _Avoid_: mode, preset, effect
+ 
+ **Scene palette**: The set of named scenes the improvisation engine draws from.
+ A seed palette ships with the system; OpenClaw can invent new scenes and reuse
+ or evolve existing ones. _Avoid_: preset list, effect bank
+ 
+ **Reserved command**: A human-steering word that overrides the autonomous improv
+ — `stop`, `off`, `calm`, `wild`. Only these words affect the show; anything else
+ is ignored. _Avoid_: voice command, hotkey
+ 
+ **Improv agent**: The OpenClaw layer that improvises the show live. On each
+ musical event it asks the LLM to choose a scene, then applies it to the
+ controller, so no two runs match. _Avoid_: DJ, autopilot
+ 
+ **Musical event**: A structural change in the music — song change, drop, or
+ silence — detected by the analysis process and published to NATS. OpenClaw
+ reacts to musical events by choosing a new scene. _Avoid_: trigger, cue
+ 
+-**Safety clamp**: A hard limit enforced in firmware — max brightness, max motor
+-speed/duty, and thermal shutdown — that no rule or scene can exceed. _Avoid_:
+-limit, cap
++**Safety clamp**: A hard limit enforced in firmware — max brightness, max chase
++speed, and thermal shutdown — that no rule or scene can exceed. _Avoid_: limit,
++cap
+ 
+ **Mapping law**: A rule that turns music into hardware output. Fixed laws are
+ hardcoded in firmware (LED group assignment, safety clamps); rewritable laws are
+-parameters a scene sets (colors, brightness curve, BPM→RPM endpoints, direction,
+-beat flash). _Avoid_: mapping, transform
++parameters a scene sets (colors, brightness curve, BPM→chase speed endpoints,
++direction, beat flash). _Avoid_: mapping, transform
+ 
+ **Beat flash**: A brief, scene-defined LED flash fired on each beat, layered on
+ top of the continuous level-tracking brightness. _Avoid_: strobe, pulse
+ 
+ **NATS subject**: A named channel on the NATS bus carrying one signal — a band
+ level, BPM, a beat event, or a musical event. Continuous values are plain
+ numeric strings; events are JSON. _Avoid_: topic, channel
+ 
+ **LED ring**: The ring of 8 WS2812B addressable RGB LEDs mounted on the disco
+-ball.
++ball. The ball itself is static; all rotation is the comet chase.
+ 
+-**Stepper**: The 28BYJ-48 stepper motor (driven via a ULN2003 board) that
+-rotates the disco ball.
++**Comet chase**: The light-only rotation effect — a bright head LED with a
++fading trail that chases around the LED ring, driven by BPM. Replaces the
++stepper for rotation. The head's color comes from the scene's low band and its
++direction follows the scene. _Avoid_: spinner, rotator
+diff --git a/analysis/scenes.py b/analysis/scenes.py
+index eaa34a8..01025ef 100644
+--- a/analysis/scenes.py
++++ b/analysis/scenes.py
+@@ -63,47 +63,41 @@ SEED_PALETTE = [
+         direction="ccw",
+         beat_flash={"color": (255, 255, 255), "threshold": 0.4, "duration_ms": 220},
+     ),
+ ]
+ 
+ _DIR_MAP = {"cw": 1, "ccw": -1, "oscillate": 0}
+ 
+ # map a musical event type to a preferred scene mood
+ _EVENT_MOOD = {"song_change": "pulse", "drop": "rage", "silence": "calm"}
+ 
+-# Fixed law: which LEDs each band drives (8-LED ring).
+-_BAND_LED_GROUPS = {"low": (0, 1, 2), "mid": (3, 4, 5), "high": (6, 7)}
+-
+ 
+ def _pack(rgb):
+     r, g, b = rgb
+     return (r << 16) | (g << 8) | b
+ 
+ 
+ def render_scene(scene):
+     """Turn a scene into the tool_exec calls needed to apply it.
+ 
+     Returns a list of flat tool_request dicts, one per actuator, that OpenClaw
+-    (or the SceneController) sends to the controller. The ring is set per-LED
+-    using the fixed band->LED mapping (low->0-2, mid->3-5, high->6-7), each in
+-    its band color, so all three bands are visible. The stepper uses the
+-    scene's fast-endpoint RPM.
++    (or the SceneController) sends to the controller. The ring is driven by a
++    single comet chase whose color comes from the scene's low band and whose
++    direction follows the scene. The chase is the sole ring driver.
+     """
+-    leds = [0] * 8
+-    for band, indices in _BAND_LED_GROUPS.items():
+-        color = _pack(scene.band_colors[band])
+-        for i in indices:
+-            leds[i] = color
+     rpm = scene.bpm_endpoints["fast_rpm"]
+     return [
+-        {"tool": "ring_set", "leds": leds},
+-        {"tool": "stepper_set", "rpm": rpm, "dir": _DIR_MAP.get(scene.direction, 1)},
++        {
++            "tool": "ring_chase",
++            "color": _pack(scene.band_colors["low"]),
++            "dir": _DIR_MAP.get(scene.direction, 1),
++        },
+     ]
+ 
+ 
+ class SceneController:
+     """Swaps the active scene on musical events and applies it to the device.
+ 
+     This is the autonomous improvisation engine. It subscribes to musical
+     events (song_change / drop / silence), picks a scene from the palette, and
+     pushes the scene's tool_exec calls to the controller. If a preferred scene
+     for the event isn't in the palette, it falls back to the next available one.
+diff --git a/docs/spec.md b/docs/spec.md
+index fc73d74..3c207f7 100644
+--- a/docs/spec.md
++++ b/docs/spec.md
+@@ -1,18 +1,19 @@
+ # Disco Ball Controller — Locked Spec
+ 
+ The destination of the wayfinder map (issue #1). This spec is the agreed design
+ for a disco ball controller: a Python **analysis process** on a PC captures
+ system loopback audio, computes **band levels** and **BPM**, and publishes them
+ to NATS; an ESP32 **controller** running extended WireClaw firmware drives an
+-8-LED WS2812B **LED ring** and a 28BYJ-48 **stepper**; OpenClaw improvises the
+-**show** by live **rule-rewriting**, so no two runs match.
++8-LED WS2812B **LED ring** with a light-only **comet chase** (a bright head LED
++with a fading trail); OpenClaw improvises the **show** by live
++**rule-rewriting**, so no two runs match.
+ 
+ Decisions are recorded on the map's tickets (#2–#8) and in `docs/research/`.
+ This document is the assembled whole.
+ 
+ ---
+ 
+ ## 1. Architecture
+ 
+ ```
+ system audio (WASAPI loopback)
+@@ -24,27 +25,27 @@ system audio (WASAPI loopback)
+ │  NumPy FFT → band levels     │
+ │  aubio-ledfx → beat + BPM    │
+ │  musical-event detection     │
+ └──────────────┬──────────────┘
+                │  NATS (local nats-server)
+                ▼
+ ┌─────────────────────────────┐
+ │  Controller (ESP32-S3)      │  WireClaw firmware (extended)
+ │  nats_value sensors          │
+ │  rule engine (offline)       │
+-│  ws2812b_ring (RMT)          │
+-│  stepper (4-phase GPIO)      │
+-└──────┬──────────────┬────────┘
+-       │              │
+-       ▼              ▼
+-   LED ring        Stepper
+-   (8× WS2812B)    (28BYJ-48 + ULN2003)
++│  ring_chase (RMT comet)      │
++└────────────┬─────────────────┘
++             │
++             ▼
++        LED ring
++        (8× WS2812B)
++        comet chase around the ring
+ ```
+ 
+ - **Analysis process** runs on the PC, publishes to NATS.
+ - **Controller** runs the show in realtime from NATS-fed values; the rule loop
+   runs 24/7 with no LLM and no network.
+ - **OpenClaw** (on the PC) subscribes to musical events and improvises by
+   swapping scenes via WireClaw `tool_exec`.
+ 
+ ## 2. Component choices
+ 
+@@ -76,66 +77,64 @@ strings**; events are **JSON**. Plain pub/sub, no persistence.
+ `band_low` ← `disco.band.low`, `band_mid` ← `disco.band.mid`, `band_high` ←
+ `disco.band.high`, `bpm` ← `disco.bpm`. Rules read these directly. The JSON
+ events (`disco.beat`, `disco.event`) are consumed by OpenClaw, not by
+ `nats_value` sensors.
+ 
+ **Provisioning:** `python scripts/disco_provision.py <device>` registers the
+ four sensors on the controller (idempotent; `--discover` lists devices; `--demo`
+ adds a bass-drop demo rule).
+ 
+ **OpenClaw control:** OpenClaw pushes scene changes via the existing WireClaw
+-`tool_exec` (rule_create / ring_set / stepper_set) over NATS — no new control
+-subject. It subscribes to `disco.event` to pick a new scene.
++`tool_exec` (rule_create / ring_chase) over NATS — no new control subject. It
++subscribes to `disco.event` to pick a new scene.
+ 
+ ## 4. Improv design
+ 
+ - **Scene** = a named bundle of rules + parameters: band→ring mapping,
+-  beat→stepper mapping, active patterns, beat-event thresholds.
++  chase→speed mapping, active patterns, beat-event thresholds.
+ - OpenClaw owns a **palette of scenes** (seed palette + invents new ones) and
+   swaps the **active scene on musical events** (song change, drop, silence).
+ - The controller runs the scene's rules in realtime between interventions.
+ - **Randomness is LLM-only** — OpenClaw picks/invents scenes; the controller
+   executes deterministically.
+ - **Fully autonomous** during a show, with reserved commands ('stop', 'off',
+   'calm', 'wild') via OpenClaw chat for human steering.
+ - **Transitions are abrupt** — scene change replaces the rule set immediately.
+ - **Failure mode:** if OpenClaw is down/slow at a musical event, the controller
+   keeps running the current scene; the next event retries.
+ 
+ ## 5. Mapping laws
+ 
+ **Fixed laws (firmware, not scene-settable):**
+ 
+-- LED group assignment: low→LEDs 0–2, mid→3–5, high→6–7.
+-- Safety clamps: max brightness, max RPM, max slew (acceleration), thermal
+-  shutdown. Enforced at the device-type level (`ring_set` / `stepper_set` clamp
+-  their inputs).
++- Comet color source: the chase head uses the scene's **low** band color; the
++  trail fades it toward off.
++- Safety clamps: max brightness, max chase speed, max slew (acceleration),
++  thermal shutdown. Enforced at the device-type level (`ring_chase` clamps its
++  input).
+ 
+ **Scene-rewritable parameters:**
+ 
+-- Per-band colors (low/mid/high).
+-- Brightness curve per band (how brightness tracks band level, e.g. linear or
+-  sqrt), clamped by firmware max.
+-- BPM→RPM endpoints (the linear map's slow/fast endpoints), within the RPM
+-  clamp.
++- Comet color (from the scene's low band).
++- BPM→chase speed endpoints (the linear map's slow/fast endpoints), clamped by
++  the firmware max.
+ - Direction: CW, CCW, or oscillate.
+ - Beat-flash params + threshold (color, which LEDs, duration, threshold).
+ 
+ **The laws:**
+ 
+-- **BPM → stepper:** linear map from BPM to RPM, endpoints scene-settable,
+-  clamped by firmware max RPM and max slew. The stepper rotates continuously at
+-  the current BPM-derived speed; BPM updates smoothly change speed (with slew
+-  limiting).
+-- **Direction:** scene-settable (CW / CCW / oscillate).
+-- **Band levels → LED ring:** fixed LED groups; each band's brightness tracks
+-  its band level via the scene's curve, clamped by firmware max.
++- **BPM → chase speed:** linear map from BPM to chase speed (LEDs per second),
++  endpoints scene-settable, clamped by firmware max. The comet head chases
++  around the ring at the current BPM-derived speed; BPM updates smoothly change
++  speed (with slew limiting).
++- **Direction:** scene-settable (CW / CCW / oscillate); the comet head follows
++  it and the trail fades behind it.
+ - **Beat events → LEDs:** a scene-defined beat flash fires on each beat, layered
+   on top of the level-tracking brightness.
+ 
+ ## 6. Pinout and wiring
+ 
+ ### 6.1 Controller pin assignment (ESP32-S3 super mini)
+ 
+ > **Super-mini constraint:** the ESP32-S3 and ESP32-C3 super-mini boards expose
+ > only **GPIO 0–15**. Pins are chosen within that range, avoiding strapping pins
+ > and flash pins. On the S3 Super Mini, **IO10 is the flash chip-select
+@@ -238,14 +237,18 @@ ULN2003 motor ────► 28BYJ-48 (5-wire connector)
+ 2. **Analysis process:** PyAudioWPatch capture → NumPy FFT band levels →
+    aubio-ledfx beat/BPM → musical-event detection → publish to NATS.
+ 3. **NATS schema:** register the `nats_value` sensors; verify subjects flow.
+ 4. **Scenes:** seed palette; OpenClaw scene-swap on `disco.event`.
+    - Implemented: `analysis/scenes.py` (Scene model + seed palette `pulse` /
+      `calm` / `rage` + `render_scene` + `SceneController`),
+      `analysis/scenerunner.py` (`SceneRunner` — subscribes to `disco.event` and
+      applies scenes via `tool_exec`). Wired into `main.py --device`.
+ 5. **Wiring:** assemble per §6; verify power budget and level shifter.
+ 6. **Improv:** OpenClaw rule-rewriting; reserved commands; safety rails.
++   - **Light-rotation change:** rotation is now the light-only **comet chase** —
++     `render_scene` drives a single `ring_chase` (color from the scene's low
++     band, direction from the scene) instead of a stepper, so the ball stays
++     static.
+    - Implemented: `analysis/commands.py` (`CommandController` — reserved
+      commands `stop`/`off`/`calm`/`wild` via `disco.command`),
+      `analysis/improv.py` (`ImprovAgent` + `OpenClawPicker` — LLM scene choice
+      on `disco.event`). Wired into `main.py --device [--improv]`.
+diff --git a/firmware/wireclaw/include/devices.h b/firmware/wireclaw/include/devices.h
+index 6237ed6..01c5d9e 100644
+--- a/firmware/wireclaw/include/devices.h
++++ b/firmware/wireclaw/include/devices.h
+@@ -28,20 +28,21 @@ enum DeviceKind {
+     DEV_SENSOR_CLOCK_HHMM,     /* getLocalTime() -> hour*100+minute (e.g. 1830) */
+     DEV_SENSOR_NATS_VALUE,     /* value received from NATS subject */
+     DEV_SENSOR_SERIAL_TEXT,    /* text received from UART serial port */
+     /* Actuators */
+     DEV_ACTUATOR_DIGITAL,       /* digitalWrite */
+     DEV_ACTUATOR_RELAY,         /* digitalWrite (inverted flag) */
+     DEV_ACTUATOR_PWM,           /* analogWrite 0-255 */
+     DEV_ACTUATOR_RGB_LED,       /* rgbLedWrite packed 0xRRGGBB */
+     DEV_ACTUATOR_WS2812B_RING,  /* disco: 8-LED WS2812B ring (RMT) */
+     DEV_ACTUATOR_STEPPER,       /* disco: 28BYJ-48 stepper (4-phase) */
++    DEV_ACTUATOR_RING_CHASE,    /* disco: comet chase on the LED ring */
+ };
+ 
+ struct Device {
+     char        name[DEV_NAME_LEN];
+     DeviceKind  kind;
+     uint8_t     pin;
+     char        unit[DEV_UNIT_LEN];
+     bool        inverted;
+     bool        used;
+     /* NATS virtual sensor fields (only meaningful for DEV_SENSOR_NATS_VALUE) */
+diff --git a/firmware/wireclaw/include/disco_chase.h b/firmware/wireclaw/include/disco_chase.h
+new file mode 100644
+index 0000000..550e840
+--- /dev/null
++++ b/firmware/wireclaw/include/disco_chase.h
+@@ -0,0 +1,18 @@
++#ifndef DISCO_CHASE_H
++#define DISCO_CHASE_H
++
++#include <stdint.h>
++#include <stdbool.h>
++
++#include "disco_config.h"
++
++/* Initialize the chase state. Call once at boot. */
++void discoChaseInit(void);
++
++/* Set the comet color (0xRRGGBB) and direction (1 CW, -1 CCW, 0 stop). */
++void discoChaseSet(uint32_t color, int8_t direction);
++
++/* Advance the comet. Call from loop() each iteration. bpm drives the speed. */
++void discoChasePoll(float bpm);
++
++#endif /* DISCO_CHASE_H */
+diff --git a/firmware/wireclaw/src/devices.cpp b/firmware/wireclaw/src/devices.cpp
+index 9c6b248..c803f1f 100644
+--- a/firmware/wireclaw/src/devices.cpp
++++ b/firmware/wireclaw/src/devices.cpp
+@@ -1,20 +1,21 @@
+ /**
+  * @file devices.cpp
+  * @brief Device registry - named sensors and actuators with persistence
+  */
+ 
+ #include "devices.h"
+ #include "nats_hal.h"
+ #include "llm_client.h"
+ #include "disco_ring.h"
+ #include "disco_stepper.h"
++#include "disco_chase.h"
+ #include <LittleFS.h>
+ #if !defined(CONFIG_IDF_TARGET_ESP32)
+ #include "driver/temperature_sensor.h"
+ extern temperature_sensor_handle_t g_temp_sensor;
+ #endif
+ #include <math.h>
+ extern bool g_debug;
+ extern void led(uint8_t r, uint8_t g, uint8_t b);
+ extern bool g_led_user;
+ 
+@@ -43,20 +44,21 @@ const char *deviceKindName(DeviceKind kind) {
+         case DEV_SENSOR_CLOCK_MINUTE:  return "clock_minute";
+         case DEV_SENSOR_CLOCK_HHMM:   return "clock_hhmm";
+         case DEV_SENSOR_NATS_VALUE:    return "nats_value";
+         case DEV_SENSOR_SERIAL_TEXT:   return "serial_text";
+         case DEV_ACTUATOR_DIGITAL:     return "digital_out";
+         case DEV_ACTUATOR_RELAY:       return "relay";
+         case DEV_ACTUATOR_PWM:         return "pwm";
+     case DEV_ACTUATOR_RGB_LED:       return "rgb_led";
+     case DEV_ACTUATOR_WS2812B_RING:  return "ws2812b_ring";
+     case DEV_ACTUATOR_STEPPER:       return "stepper";
++    case DEV_ACTUATOR_RING_CHASE:    return "ring_chase";
+     default: return "unknown";
+     }
+ }
+ 
+ static DeviceKind kindFromString(const char *s) {
+     if (strcmp(s, "digital_in") == 0)    return DEV_SENSOR_DIGITAL;
+     if (strcmp(s, "analog_in") == 0)     return DEV_SENSOR_ANALOG_RAW;
+     if (strcmp(s, "ntc_10k") == 0)       return DEV_SENSOR_NTC_10K;
+     if (strcmp(s, "ldr") == 0)           return DEV_SENSOR_LDR;
+     if (strcmp(s, "internal_temp") == 0) return DEV_SENSOR_INTERNAL_TEMP;
+@@ -64,20 +66,21 @@ static DeviceKind kindFromString(const char *s) {
+     if (strcmp(s, "clock_minute") == 0)  return DEV_SENSOR_CLOCK_MINUTE;
+     if (strcmp(s, "clock_hhmm") == 0)   return DEV_SENSOR_CLOCK_HHMM;
+     if (strcmp(s, "nats_value") == 0)    return DEV_SENSOR_NATS_VALUE;
+     if (strcmp(s, "serial_text") == 0)   return DEV_SENSOR_SERIAL_TEXT;
+     if (strcmp(s, "digital_out") == 0)   return DEV_ACTUATOR_DIGITAL;
+     if (strcmp(s, "relay") == 0)         return DEV_ACTUATOR_RELAY;
+     if (strcmp(s, "pwm") == 0)           return DEV_ACTUATOR_PWM;
+     if (strcmp(s, "rgb_led") == 0)      return DEV_ACTUATOR_RGB_LED;
+     if (strcmp(s, "ws2812b_ring") == 0)  return DEV_ACTUATOR_WS2812B_RING;
+     if (strcmp(s, "stepper") == 0)       return DEV_ACTUATOR_STEPPER;
++    if (strcmp(s, "ring_chase") == 0)    return DEV_ACTUATOR_RING_CHASE;
+     return DEV_SENSOR_DIGITAL;
+ }
+ 
+ /*============================================================================
+  * CRUD
+  *============================================================================*/
+ 
+ Device *deviceGetAll() {
+     return g_devices;
+ }
+@@ -310,20 +313,25 @@ bool deviceSetActuator(Device *dev, int value) {
+                           (uint8_t)(value & 0xFF));
+             discoRingShow();
+             return true;
+ 
+         case DEV_ACTUATOR_STEPPER:
+             /* value: 0 = stop, >0 = CW at value RPM, <0 = CCW at |value| RPM */
+             discoStepperSetSpeed((float)(value < 0 ? -value : value),
+                                 value < 0 ? -1 : (value > 0 ? 1 : 0));
+             return true;
+ 
++        case DEV_ACTUATOR_RING_CHASE:
++            /* value packs 0xRRGGBB; direction defaults CW */
++            discoChaseSet((uint32_t)value, 1);
++            return true;
++
+         default:
+             return false;
+     }
+ }
+ 
+ /*============================================================================
+  * NATS Virtual Sensor Helpers
+  *============================================================================*/
+ 
+ void deviceSetNatsValue(Device *dev, float value, const char *msg) {
+@@ -589,20 +597,24 @@ void devicesReload() {
+     }
+ #endif
+     if (!deviceFind("ring")) {
+         deviceRegister("ring", DEV_ACTUATOR_WS2812B_RING, DISCO_RING_PIN, "", false);
+         changed = true;
+     }
+     if (!deviceFind("stepper")) {
+         deviceRegister("stepper", DEV_ACTUATOR_STEPPER, DISCO_STEPPER_IN1, "", false);
+         changed = true;
+     }
++    if (!deviceFind("ring_chase")) {
++        deviceRegister("ring_chase", DEV_ACTUATOR_RING_CHASE, DISCO_RING_PIN, "", false);
++        changed = true;
++    }
+     if (changed) devicesSave();
+ 
+     int count = 0;
+     for (int i = 0; i < MAX_DEVICES; i++)
+         if (g_devices[i].used) count++;
+     Serial.printf("Devices: reloaded (%d registered)\n", count);
+ }
+ 
+ /*============================================================================
+  * Serial Text UART (one device max, UART1 on fixed pins)
+@@ -767,17 +779,21 @@ void devicesInit() {
+     }
+ #endif
+     if (!deviceFind("ring")) {
+         deviceRegister("ring", DEV_ACTUATOR_WS2812B_RING, DISCO_RING_PIN, "", false);
+         changed = true;
+     }
+     if (!deviceFind("stepper")) {
+         deviceRegister("stepper", DEV_ACTUATOR_STEPPER, DISCO_STEPPER_IN1, "", false);
+         changed = true;
+     }
++    if (!deviceFind("ring_chase")) {
++        deviceRegister("ring_chase", DEV_ACTUATOR_RING_CHASE, DISCO_RING_PIN, "", false);
++        changed = true;
++    }
+     if (changed) devicesSave();
+ 
+     int count = 0;
+     for (int i = 0; i < MAX_DEVICES; i++)
+         if (g_devices[i].used) count++;
+     Serial.printf("Devices: %d registered\n", count);
+ }
+diff --git a/firmware/wireclaw/src/disco_chase.cpp b/firmware/wireclaw/src/disco_chase.cpp
+new file mode 100644
+index 0000000..3064780
+--- /dev/null
++++ b/firmware/wireclaw/src/disco_chase.cpp
+@@ -0,0 +1,58 @@
++#include "disco_chase.h"
++
++#include <Arduino.h>
++#include <math.h>
++
++#include "disco_ring.h"
++
++static uint32_t s_color = 0xFF0000;
++static int8_t s_direction = 1;
++static float s_pos = 0.0f;
++static unsigned long s_last_ms = 0;
++
++void discoChaseInit(void) {
++    s_last_ms = millis();
++}
++
++void discoChaseSet(uint32_t color, int8_t direction) {
++    s_color = color;
++    s_direction = (direction > 0) ? 1 : (direction < 0) ? -1 : 0;
++}
++
++void discoChasePoll(float bpm) {
++    unsigned long now = millis();
++    float dt = (float)(now - s_last_ms) / 1000.0f;
++    if (dt <= 0.0f) dt = 0.001f;
++    s_last_ms = now;
++
++    if (s_direction == 0) {
++        discoRingFill(0, 0, 0);
++        discoRingShow();
++        return;
++    }
++
++    /* Speed: LEDs/sec from BPM (120 BPM -> 4 LEDs/sec, 60 BPM -> 2). */
++    float speed = (bpm > 0.0f) ? (bpm / 30.0f) : 2.0f;
++    s_pos += speed * dt * s_direction;
++
++    /* Wrap position into [0, 8). */
++    s_pos = fmodf(s_pos, (float)DISCO_RING_LEDS);
++    if (s_pos < 0.0f) s_pos += (float)DISCO_RING_LEDS;
++
++    uint8_t r = (s_color >> 16) & 0xFF;
++    uint8_t g = (s_color >> 8) & 0xFF;
++    uint8_t b = s_color & 0xFF;
++
++    /* Head at s_pos, fading trail of 3 LEDs behind it. */
++    const float trail_len = 3.0f;
++    for (int i = 0; i < DISCO_RING_LEDS; i++) {
++        float behind = fmodf((s_pos - (float)i) * s_direction, (float)DISCO_RING_LEDS);
++        if (behind < 0.0f) behind += (float)DISCO_RING_LEDS;
++        float brightness = (behind < trail_len) ? (1.0f - behind / trail_len) : 0.0f;
++        discoRingSetPixel((uint8_t)i,
++                          (uint8_t)(r * brightness),
++                          (uint8_t)(g * brightness),
++                          (uint8_t)(b * brightness));
++    }
++    discoRingShow();
++}
+diff --git a/firmware/wireclaw/src/main.cpp b/firmware/wireclaw/src/main.cpp
+index d603816..a735ba7 100644
+--- a/firmware/wireclaw/src/main.cpp
++++ b/firmware/wireclaw/src/main.cpp
+@@ -20,20 +20,21 @@
+ #include "tools.h"
+ #include "devices.h"
+ #include "rules.h"
+ #include "setup_portal.h"
+ #include "version.h"
+ #include "web_config.h"
+ #include "nats_hal.h"
+ #include <nats_esp32.h>
+ #include "disco_ring.h"
+ #include "disco_stepper.h"
++#include "disco_chase.h"
+ 
+ /*============================================================================
+  * Configuration
+  *============================================================================*/
+ 
+ #define LED_BRIGHTNESS   20
+ #define SERIAL_BUF_SIZE  512
+ #define MAX_HISTORY      4  /* Keep last N user+assistant turns (pairs) */
+ 
+ /* Runtime config - loaded from LittleFS, falls back to secrets.h */
+@@ -1634,20 +1635,21 @@ void setup() {
+     }
+ #endif
+ 
+     /* Initialize device registry and rule engine */
+     devicesInit();
+     rulesInit();
+ 
+     /* Initialize disco drivers (WS2812B ring + stepper) */
+     discoRingInit();
+     discoStepperInit();
++    discoChaseInit();
+ 
+     if (cfg_wifi_ssid[0] == '\0') {
+         Serial.printf("\n[!] No WiFi config — starting setup portal\n");
+         runSetupPortal(); /* blocks until config saved + reboot */
+     }
+ 
+     /* Connect WiFi */
+     if (!connectWiFi()) {
+         Serial.printf("[!] WiFi failed — starting setup portal\n");
+         runSetupPortal(); /* blocks until config saved + reboot */
+@@ -1760,20 +1762,26 @@ void loop() {
+ 
+     /* Keep sensor EMA values warm (every 10s) */
+     sensorsPoll();
+ 
+     /* Evaluate automation rules */
+     rulesEvaluate();
+ 
+     /* Advance the disco stepper toward its target speed */
+     discoStepperPoll();
+ 
++    /* Advance the comet chase, speed tracked by BPM sensor */
++    float bpm = 0.0f;
++    Device *bpm_dev = deviceFind("bpm");
++    if (bpm_dev) bpm = deviceReadSensor(bpm_dev);
++    discoChasePoll(bpm);
++
+     /* Poll serial_text UART for incoming data */
+     serialTextPoll();
+ 
+     /* Deferred reboot (allows Telegram ACK cycle to complete) */
+     if (g_reboot_pending && millis() >= g_reboot_at) {
+         Serial.printf("[Reboot] Deferred restart now\n");
+         delay(200);
+         ESP.restart();
+     }
+ 
+diff --git a/firmware/wireclaw/src/tools.cpp b/firmware/wireclaw/src/tools.cpp
+index 281dd97..62842c7 100644
+--- a/firmware/wireclaw/src/tools.cpp
++++ b/firmware/wireclaw/src/tools.cpp
+@@ -3,20 +3,21 @@
+  * @brief ESP32 tool definitions and handlers for LLM tool calling
+  */
+ 
+ #include "tools.h"
+ #include "llm_client.h"
+ #include "devices.h"
+ #include "nats_hal.h"
+ #include "rules.h"
+ #include "disco_ring.h"
+ #include "disco_stepper.h"
++#include "disco_chase.h"
+ #include <Arduino.h>
+ #include <WiFi.h>
+ #include "soc/soc_caps.h"
+ #include <LittleFS.h>
+ #include <nats_esp32.h>
+ #include <esp_task_wdt.h>
+ #if !defined(CONFIG_IDF_TARGET_ESP32)
+ #include "driver/temperature_sensor.h"
+ #endif
+ 
+@@ -110,20 +111,21 @@ static int jsonArgArrayInt(const char *json, const char *key, int index, int def
+ }
+ 
+ /*============================================================================
+  * Tool Definitions (OpenAI function calling format) - compacted
+  *============================================================================*/
+ 
+ static const char *TOOLS_JSON = R"JSON([
+   {"type":"function","function":{"name":"led_set","description":"Set RGB LED 0-255","parameters":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"}},"required":["r","g","b"]}}},
+   {"type":"function","function":{"name":"ring_set","description":"Set the 8-LED WS2812B ring. Either solid fill via r/g/b, or per-LED via leds array of 8 packed 0xRRGGBB integers.","parameters":{"type":"object","properties":{"r":{"type":"integer"},"g":{"type":"integer"},"b":{"type":"integer"},"leds":{"type":"array","items":{"type":"integer"}}},"required":[]}}},
+   {"type":"function","function":{"name":"stepper_set","description":"Set the 28BYJ-48 stepper speed and direction. rpm: 0-15, dir: 1=CW, -1=CCW, 0=stop.","parameters":{"type":"object","properties":{"rpm":{"type":"integer"},"dir":{"type":"integer"}},"required":["rpm"]}}},
++  {"type":"function","function":{"name":"ring_chase","description":"Start a comet chase around the 8-LED ring. color: 0xRRGGBB, dir: 1=CW, -1=CCW, 0=stop. Speed tracks BPM.","parameters":{"type":"object","properties":{"color":{"type":"integer"},"dir":{"type":"integer"}},"required":["color"]}}},
+ {"type":"function","function":{"name":"gpio_write","description":"Set GPIO pin HIGH/LOW","parameters":{"type":"object","properties":{"pin":{"type":"integer"},"value":{"type":"integer"}},"required":["pin","value"]}}},
+ {"type":"function","function":{"name":"gpio_read","description":"Read GPIO pin state","parameters":{"type":"object","properties":{"pin":{"type":"integer"}},"required":["pin"]}}},
+ {"type":"function","function":{"name":"device_info","description":"Get heap, uptime, WiFi, chip info","parameters":{"type":"object","properties":{}}}},
+ {"type":"function","function":{"name":"file_read","description":"Read file from filesystem","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}},
+ {"type":"function","function":{"name":"file_write","description":"Write file to filesystem","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}},
+ {"type":"function","function":{"name":"nats_publish","description":"Publish NATS message","parameters":{"type":"object","properties":{"subject":{"type":"string"},"payload":{"type":"string"}},"required":["subject","payload"]}}},
+ {"type":"function","function":{"name":"temperature_read","description":"Read chip temperature (C)","parameters":{"type":"object","properties":{}}}},
+ {"type":"function","function":{"name":"device_register","description":"Register sensor/actuator","parameters":{"type":"object","properties":{"name":{"type":"string"},"type":{"type":"string","enum":["digital_in","analog_in","ntc_10k","ldr","nats_value","serial_text","digital_out","relay","pwm","ws2812b_ring","stepper"],"description":"digital_in: GPIO digital read, analog_in: raw ADC reading, ntc_10k: NTC 10K thermistor (temp in C, set inverted=true if NTC is on the 3.3V side), ldr: light-dependent resistor (light level), nats_value: virtual sensor from NATS subject, serial_text: UART text input, digital_out: GPIO digital write, relay: relay on/off, pwm: PWM output, ws2812b_ring: 8-LED WS2812B ring (RMT), stepper: 28BYJ-48 stepper"},"pin":{"type":"integer"},"unit":{"type":"string"},"inverted":{"type":"boolean"},"subject":{"type":"string","description":"NATS subject (for nats_value)"},"baud":{"type":"integer","description":"Baud rate for serial_text (default 9600)"}},"required":["name","type"]}}},
+ {"type":"function","function":{"name":"device_list","description":"List registered devices","parameters":{"type":"object","properties":{}}}},
+ {"type":"function","function":{"name":"device_remove","description":"Remove device by name","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
+@@ -194,20 +196,29 @@ static void tool_stepper_set(const char *args, char *result, int result_len) {
+     int rpm = jsonArgInt(args, "rpm", 0);
+     int dir = jsonArgInt(args, "dir", 1); /* 1 CW, -1 CCW, 0 stop */
+     if (dir > 1) dir = 1;
+     if (dir < -1) dir = -1;
+     discoStepperSetSpeed((float)rpm, (int8_t)dir);
+     Device *stepper = deviceFind("stepper");
+     if (stepper) stepper->last_value = (dir < 0) ? -rpm : rpm;
+     snprintf(result, result_len, "Stepper set to %d RPM dir=%d", rpm, dir);
+ }
+ 
++static void tool_ring_chase(const char *args, char *result, int result_len) {
++    int color = jsonArgInt(args, "color", 0xFF0000);
++    int dir = jsonArgInt(args, "dir", 1);
++    if (dir > 1) dir = 1;
++    if (dir < -1) dir = -1;
++    discoChaseSet((uint32_t)color, (int8_t)dir);
++    snprintf(result, result_len, "Chase set color=0x%06X dir=%d", color, dir);
++}
++
+ static void tool_gpio_write(const char *args, char *result, int result_len) {
+     int pin = jsonArgInt(args, "pin", -1);
+     int value = jsonArgInt(args, "value", 0);
+ 
+     if (pin < 0 || pin >= SOC_GPIO_PIN_COUNT) {
+         snprintf(result, result_len, "Error: invalid pin %d (must be 0-%d)", pin, SOC_GPIO_PIN_COUNT - 1);
+         return;
+     }
+ 
+     pinMode(pin, OUTPUT);
+@@ -1196,20 +1207,22 @@ const char *toolsGetDefinitions() {
+ }
+ 
+ bool toolExecute(const char *name, const char *args_json,
+                   char *result, int result_len) {
+     if (strcmp(name, "led_set") == 0) {
+         tool_led_set(args_json, result, result_len);
+     } else if (strcmp(name, "ring_set") == 0) {
+         tool_ring_set(args_json, result, result_len);
+     } else if (strcmp(name, "stepper_set") == 0) {
+         tool_stepper_set(args_json, result, result_len);
++    } else if (strcmp(name, "ring_chase") == 0) {
++        tool_ring_chase(args_json, result, result_len);
+     } else if (strcmp(name, "gpio_write") == 0) {
+         tool_gpio_write(args_json, result, result_len);
+     } else if (strcmp(name, "gpio_read") == 0) {
+         tool_gpio_read(args_json, result, result_len);
+     } else if (strcmp(name, "device_info") == 0) {
+         tool_device_info(args_json, result, result_len);
+     } else if (strcmp(name, "file_read") == 0) {
+         tool_file_read(args_json, result, result_len);
+     } else if (strcmp(name, "file_write") == 0) {
+         tool_file_write(args_json, result, result_len);
+diff --git a/tests/test_commands.py b/tests/test_commands.py
+index f485a70..9bf6083 100644
+--- a/tests/test_commands.py
++++ b/tests/test_commands.py
+@@ -39,28 +39,28 @@ def test_stop_stops_stepper():
+     asyncio.run(ctrl.handle("stop"))
+     stepper = next(p for _, t, p in client.sent if t == "stepper_set")
+     assert stepper["rpm"] == 0
+ 
+ 
+ def test_calm_applies_calm_scene():
+     client = FakeClient()
+     ctrl = CommandController(client=client, device="w")
+     asyncio.run(ctrl.handle("calm"))
+     tools = {t for _, t, _ in client.sent}
+-    assert "ring_set" in tools
+-    assert "stepper_set" in tools
++    assert "ring_chase" in tools
++    assert "stepper_set" not in tools
+ 
+ 
+ def test_wild_applies_wild_scene():
+     client = FakeClient()
+     ctrl = CommandController(client=client, device="w")
+     asyncio.run(ctrl.handle("wild"))
+     tools = {t for _, t, _ in client.sent}
+-    assert "ring_set" in tools
+-    assert "stepper_set" in tools
++    assert "ring_chase" in tools
++    assert "stepper_set" not in tools
+ 
+ 
+ def test_unknown_command_is_noop():
+     client = FakeClient()
+     ctrl = CommandController(client=client, device="w")
+     asyncio.run(ctrl.handle("dance"))
+     assert client.sent == []
+diff --git a/tests/test_improv.py b/tests/test_improv.py
+index 09f37bc..09b0ebf 100644
+--- a/tests/test_improv.py
++++ b/tests/test_improv.py
+@@ -57,25 +57,25 @@ def test_agent_applies_picked_scene_on_event():
+         name="pulse",
+         band_colors={"low": (10, 20, 30), "mid": (1, 2, 3), "high": (4, 5, 6)},
+     )
+     nc, agent = make_agent(scene)
+ 
+     async def go():
+         await nc.publish("disco.event", json.dumps({"type": "drop", "ts": 1}).encode())
+ 
+     asyncio.run(go())
+     tools = {t.get("tool") for _, t in nc.tool_calls}
+-    assert "ring_set" in tools
+-    assert "stepper_set" in tools
+-    # the picked scene's low color is applied to the low-band LEDs (0-2)
+-    ring = next(t for _, t in nc.tool_calls if t.get("tool") == "ring_set")
+-    assert ring["leds"][0] == (10 << 16) | (20 << 8) | 30
++    assert "ring_chase" in tools
++    assert "stepper_set" not in tools
++    # the picked scene's low color drives the chase
++    chase = next(t for _, t in nc.tool_calls if t.get("tool") == "ring_chase")
++    assert chase["color"] == (10 << 16) | (20 << 8) | 30
+ 
+ 
+ def test_agent_uses_picker_per_event():
+     scene = Scene(name="pulse")
+     nc, agent = make_agent(scene)
+ 
+     async def go():
+         await nc.publish(
+             "disco.event", json.dumps({"type": "song_change", "ts": 1}).encode()
+         )
+@@ -116,11 +116,11 @@ def test_agent_survives_device_offline():
+     asyncio.run(agent.start())
+ 
+     async def go():
+         # first event: device offline (request raises) -> must not crash
+         await nc.publish("disco.event", json.dumps({"type": "drop", "ts": 1}).encode())
+         # second event: device back -> must still apply
+         await nc.publish("disco.event", json.dumps({"type": "drop", "ts": 2}).encode())
+ 
+     asyncio.run(go())
+     tools = [t.get("tool") for _, t in nc.tool_calls]
+-    assert "ring_set" in tools  # the second event still applied a scene
++    assert "ring_chase" in tools  # the second event still applied a scene
+diff --git a/tests/test_scene_controller.py b/tests/test_scene_controller.py
+index 58526e8..a662a1b 100644
+--- a/tests/test_scene_controller.py
++++ b/tests/test_scene_controller.py
+@@ -23,22 +23,22 @@ def test_picks_scene_on_event():
+     )
+     asyncio.run(ctrl.handle_event("song_change"))
+     assert ctrl.current_scene in [s.name for s in SEED_PALETTE]
+ 
+ 
+ def test_applies_scene_as_tool_calls():
+     client = FakeClient()
+     ctrl = SceneController(client=client, device="wireclaw-01", palette=SEED_PALETTE)
+     asyncio.run(ctrl.handle_event("drop"))
+     tools = {t for _, t, _ in client.sent}
+-    assert "ring_set" in tools
+-    assert "stepper_set" in tools
++    assert "ring_chase" in tools
++    assert "stepper_set" not in tools
+     # every call targets the controller device
+     assert all(d == "wireclaw-01" for d, _, _ in client.sent)
+ 
+ 
+ def test_calmer_scene_for_silence():
+     client = FakeClient()
+     ctrl = SceneController(client=client, device="w", palette=SEED_PALETTE)
+     asyncio.run(ctrl.handle_event("silence"))
+     # silence should settle toward a calm scene, not rage
+     assert ctrl.current_scene != "rage"
+diff --git a/tests/test_scenerunner.py b/tests/test_scenerunner.py
+index eea951a..709bf68 100644
+--- a/tests/test_scenerunner.py
++++ b/tests/test_scenerunner.py
+@@ -45,22 +45,22 @@ def test_runner_subscribes_to_disco_event():
+ 
+ 
+ def test_runner_applies_scene_on_event():
+     nc, runner = make_runner()
+ 
+     async def go():
+         await nc.publish("disco.event", json.dumps({"type": "drop", "ts": 1}).encode())
+ 
+     asyncio.run(go())
+     tools = {t.get("tool") for _, t in nc.tool_calls}
+-    assert "ring_set" in tools
+-    assert "stepper_set" in tools
++    assert "ring_chase" in tools
++    assert "stepper_set" not in tools
+ 
+ 
+ def test_runner_targets_device_tool_exec():
+     nc, runner = make_runner()
+ 
+     async def go():
+         await nc.publish(
+             "disco.event", json.dumps({"type": "song_change", "ts": 1}).encode()
+         )
+ 
+diff --git a/tests/test_scenes.py b/tests/test_scenes.py
+index f3ddfab..34d1f38 100644
+--- a/tests/test_scenes.py
++++ b/tests/test_scenes.py
+@@ -15,60 +15,37 @@ def test_scene_has_required_fields():
+         band_colors={"low": (255, 0, 0), "mid": (0, 255, 0), "high": (0, 0, 255)},
+         bpm_endpoints={"slow_bpm": 60, "fast_bpm": 180, "slow_rpm": 1, "fast_rpm": 8},
+         direction="cw",
+         beat_flash={"color": (255, 255, 255), "threshold": 0.5, "duration_ms": 200},
+     )
+     assert s.name == "pulse"
+     assert s.direction == "cw"
+     assert s.bpm_endpoints["fast_rpm"] == 8
+ 
+ 
+-def test_render_scene_produces_ring_and_stepper_calls():
++def test_render_scene_produces_ring_chase():
+     s = SEED_PALETTE[0]
+     calls = render_scene(s)
+     tools = [c["tool"] for c in calls]
+-    # a scene must control the ring and the stepper
+-    assert "ring_set" in tools
+-    assert "stepper_set" in tools
++    assert "ring_chase" in tools
++    assert "stepper_set" not in tools
+ 
+ 
+-def test_render_scene_ring_set_has_color():
+-    s = SEED_PALETTE[0]
+-    calls = render_scene(s)
+-    ring = next(c for c in calls if c["tool"] == "ring_set")
+-    assert "leds" in ring
+-    assert len(ring["leds"]) == 8
+-    assert all(0 <= v <= 0xFFFFFF for v in ring["leds"])
+-
+-
+-def test_render_scene_ring_maps_bands_to_led_groups():
+-    """Fixed law: low->LEDs 0-2, mid->3-5, high->6-7, each in its band color."""
++def test_render_scene_ring_chase_has_color_and_dir():
+     s = Scene(
+         name="test",
+         band_colors={"low": (255, 0, 0), "mid": (0, 255, 0), "high": (0, 0, 255)},
+         bpm_endpoints={"slow_bpm": 60, "fast_bpm": 180, "slow_rpm": 1, "fast_rpm": 8},
+-        direction="cw",
++        direction="ccw",
+         beat_flash={"color": (255, 255, 255), "threshold": 0.5, "duration_ms": 200},
+     )
+     calls = render_scene(s)
+-    ring = next(c for c in calls if c["tool"] == "ring_set")
+-    leds = ring["leds"]
+-    # low (red) on LEDs 0-2
+-    assert leds[0] == 0xFF0000 and leds[1] == 0xFF0000 and leds[2] == 0xFF0000
+-    # mid (green) on LEDs 3-5
+-    assert leds[3] == 0x00FF00 and leds[4] == 0x00FF00 and leds[5] == 0x00FF00
+-    # high (blue) on LEDs 6-7
+-    assert leds[6] == 0x0000FF and leds[7] == 0x0000FF
+-
+-
+-def test_render_scene_stepper_set_has_rpm_and_dir():
+-    s = SEED_PALETTE[0]
+-    calls = render_scene(s)
+-    stepper = next(c for c in calls if c["tool"] == "stepper_set")
+-    assert "rpm" in stepper
+-    assert stepper["rpm"] >= 0
+-    assert stepper["dir"] in (1, -1, 0)
++    chase = next(c for c in calls if c["tool"] == "ring_chase")
++    # color comes from the low band
++    assert chase["color"] == 0xFF0000
++    # direction follows the scene
++    assert chase["dir"] == -1
+ 
+ 
+ def test_palette_scenes_are_distinct():
+     names = {s.name for s in SEED_PALETTE}
+     assert len(names) == len(SEED_PALETTE)
