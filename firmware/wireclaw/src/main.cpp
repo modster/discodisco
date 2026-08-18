@@ -27,6 +27,7 @@
 #include <nats_esp32.h>
 #include "disco_ring.h"
 #include "disco_stepper.h"
+#include "disco_chase.h"
 
 /*============================================================================
  * Configuration
@@ -1641,6 +1642,7 @@ void setup() {
     /* Initialize disco drivers (WS2812B ring + stepper) */
     discoRingInit();
     discoStepperInit();
+    discoChaseInit();
 
     if (cfg_wifi_ssid[0] == '\0') {
         Serial.printf("\n[!] No WiFi config — starting setup portal\n");
@@ -1766,6 +1768,12 @@ void loop() {
 
     /* Advance the disco stepper toward its target speed */
     discoStepperPoll();
+
+    /* Advance the comet chase, speed tracked by BPM sensor */
+    float bpm = 0.0f;
+    Device *bpm_dev = deviceFind("bpm");
+    if (bpm_dev) bpm = deviceReadSensor(bpm_dev);
+    discoChasePoll(bpm);
 
     /* Poll serial_text UART for incoming data */
     serialTextPoll();

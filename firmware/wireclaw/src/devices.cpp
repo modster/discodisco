@@ -8,6 +8,7 @@
 #include "llm_client.h"
 #include "disco_ring.h"
 #include "disco_stepper.h"
+#include "disco_chase.h"
 #include <LittleFS.h>
 #if !defined(CONFIG_IDF_TARGET_ESP32)
 #include "driver/temperature_sensor.h"
@@ -50,6 +51,7 @@ const char *deviceKindName(DeviceKind kind) {
     case DEV_ACTUATOR_RGB_LED:       return "rgb_led";
     case DEV_ACTUATOR_WS2812B_RING:  return "ws2812b_ring";
     case DEV_ACTUATOR_STEPPER:       return "stepper";
+    case DEV_ACTUATOR_RING_CHASE:    return "ring_chase";
     default: return "unknown";
     }
 }
@@ -71,6 +73,7 @@ static DeviceKind kindFromString(const char *s) {
     if (strcmp(s, "rgb_led") == 0)      return DEV_ACTUATOR_RGB_LED;
     if (strcmp(s, "ws2812b_ring") == 0)  return DEV_ACTUATOR_WS2812B_RING;
     if (strcmp(s, "stepper") == 0)       return DEV_ACTUATOR_STEPPER;
+    if (strcmp(s, "ring_chase") == 0)    return DEV_ACTUATOR_RING_CHASE;
     return DEV_SENSOR_DIGITAL;
 }
 
@@ -315,6 +318,11 @@ bool deviceSetActuator(Device *dev, int value) {
             /* value: 0 = stop, >0 = CW at value RPM, <0 = CCW at |value| RPM */
             discoStepperSetSpeed((float)(value < 0 ? -value : value),
                                 value < 0 ? -1 : (value > 0 ? 1 : 0));
+            return true;
+
+        case DEV_ACTUATOR_RING_CHASE:
+            /* value packs 0xRRGGBB; direction defaults CW */
+            discoChaseSet((uint32_t)value, 1);
             return true;
 
         default:
@@ -596,6 +604,10 @@ void devicesReload() {
         deviceRegister("stepper", DEV_ACTUATOR_STEPPER, DISCO_STEPPER_IN1, "", false);
         changed = true;
     }
+    if (!deviceFind("ring_chase")) {
+        deviceRegister("ring_chase", DEV_ACTUATOR_RING_CHASE, DISCO_RING_PIN, "", false);
+        changed = true;
+    }
     if (changed) devicesSave();
 
     int count = 0;
@@ -772,6 +784,10 @@ void devicesInit() {
     }
     if (!deviceFind("stepper")) {
         deviceRegister("stepper", DEV_ACTUATOR_STEPPER, DISCO_STEPPER_IN1, "", false);
+        changed = true;
+    }
+    if (!deviceFind("ring_chase")) {
+        deviceRegister("ring_chase", DEV_ACTUATOR_RING_CHASE, DISCO_RING_PIN, "", false);
         changed = true;
     }
     if (changed) devicesSave();

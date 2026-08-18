@@ -35,6 +35,7 @@ enum DeviceKind {
     DEV_ACTUATOR_RGB_LED,       /* rgbLedWrite packed 0xRRGGBB */
     DEV_ACTUATOR_WS2812B_RING,  /* disco: 8-LED WS2812B ring (RMT) */
     DEV_ACTUATOR_STEPPER,       /* disco: 28BYJ-48 stepper (4-phase) */
+    DEV_ACTUATOR_RING_CHASE,    /* disco: comet chase on the LED ring */
 };
 
 struct Device {
